@@ -1,0 +1,80 @@
+name: weekly devlog stub
+
+on:
+  schedule:
+    # Every Monday 07:00 UTC == 11:00 Asia/Tbilisi
+    - cron: "0 7 * * MON"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  make-entry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set timezone to Tbilisi
+        run: echo "TZ=Asia/Tbilisi" >> $GITHUB_ENV
+
+      - name: Compute next filename
+        id: meta
+        shell: bash
+        run: |
+          mkdir -p changelog
+          Y=$(date +%Y)
+          M=$(date +%m)
+
+          # იპოვე ამ თვეში არსებულები და გამოითვალე შემდეგი ნომერი
+          mapfile -t files < <(ls changelog/${Y}-${M}-week-*.md 2>/dev/null || true)
+          if [ ${#files[@]} -eq 0 ]; then
+            NEXT=01
+          else
+            max=0
+            for f in "${files[@]}"; do
+              n=$(basename "$f" | sed -E 's/.*week-([0-9]{2}).md/\1/')
+              ((10#$n > max)) && max=$((10#$n))
+            done
+            NEXT=$(printf "%02d" $((max+1)))
+          fi
+
+          FILENAME="changelog/${Y}-${M}-week-${NEXT}.md"
+          echo "FILENAME=$FILENAME" >> $GITHUB_OUTPUT
+          echo "Y=$Y" >> $GITHUB_OUTPUT
+          echo "M=$M" >> $GITHUB_OUTPUT
+          echo "W=$NEXT" >> $GITHUB_OUTPUT
+
+      - name: Create entry file (if missing)
+        shell: bash
+        run: |
+          if [ -f "${{ steps.meta.outputs.FILENAME }}" ]; then
+            echo "File already exists: ${{ steps.meta.outputs.FILENAME }} — skipping."
+            exit 0
+          fi
+
+          TODAY=$(date +%Y-%m-%d)
+          cat > "${{ steps.meta.outputs.FILENAME }}" <<EOF
+# Week ${{ steps.meta.outputs.W }} – ${{ steps.meta.outputs.Y }}-${{ steps.meta.outputs.M }}
+
+_Date created:_ ${TODAY}
+
+## ✅ What I accomplished
+- ...
+
+## 🔧 In progress
+- ...
+
+## 🧠 What I learned
+- ...
+EOF
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          git config user.name "ba1u-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add "${{ steps.meta.outputs.FILENAME }}"
+          git commit -m "chore(devlog): create ${{ steps.meta.outputs.FILENAME }}" || exit 0
+          git push
