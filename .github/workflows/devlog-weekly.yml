@@ -61,8 +61,38 @@ jobs:
           github-token: ${{ secrets.DEVLOG_TOKEN }}
           script: |
             const targets = [
-              { owner: 'wine-online-store', repo: 'wine-marketplace' },
-              { owner: 'Ba1u1994', repo: 'wine-marketplace-roadmap' }
+              {
+                owner: 'wine-online-store',
+                repo: 'wine-marketplace',
+                includeBranchPatterns: [
+                  /^main$/i,
+                  /^develop$/i,
+                  /^feature\//i,
+                  /^bugfix\//i,
+                  /^hotfix\//i,
+                  /^release\//i
+                ],
+                excludeBranchPatterns: [
+                  /^gh-pages$/i,
+                  /^dependabot\//i
+                ]
+              },
+              {
+                owner: 'Ba1u1994',
+                repo: 'wine-marketplace-roadmap',
+                includeBranchPatterns: [
+                  /^main$/i,
+                  /^develop$/i,
+                  /^feature\//i,
+                  /^bugfix\//i,
+                  /^hotfix\//i,
+                  /^release\//i
+                ],
+                excludeBranchPatterns: [
+                  /^gh-pages$/i,
+                  /^dependabot\//i
+                ]
+              }
             ];
 
             const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -80,6 +110,7 @@ jobs:
 
             const inProgress = [];
             const warnings = [];
+            const seenShas = new Set();
 
             const keywords = {
               feat: /^feat(\(.+\))?:/i,
@@ -91,20 +122,40 @@ jobs:
               test: /^tests?(\(.+\))?:/i
             };
 
-            const addCommitToBuckets = (repoLabel, msgFull) => {
-              const msg = (msgFull || '').split('\n')[0].trim();
-              if (!msg) return;
+            function matchesAny(name, patterns) {
+              return patterns.some((p) => p.test(name));
+            }
 
-              const line = `- **${repoLabel}**: ${msg}`;
-
-              let cat = 'other';
-              for (const [key, regex] of Object.entries(keywords)) {
-                if (regex.test(msg)) {
-                  cat = key;
-                  break;
-                }
+            function shouldIncludeBranch(branchName, target) {
+              if (matchesAny(branchName, target.excludeBranchPatterns || [])) {
+                return false;
               }
 
+              if (!target.includeBranchPatterns || target.includeBranchPatterns.length === 0) {
+                return true;
+              }
+
+              return matchesAny(branchName, target.includeBranchPatterns);
+            }
+
+            function categorizeMessage(msg) {
+              for (const [key, regex] of Object.entries(keywords)) {
+                if (regex.test(msg)) {
+                  return key;
+                }
+              }
+              return 'other';
+            }
+
+            function addCommit(repoLabel, branchName, msgFull, sha) {
+              const msg = (msgFull || '').split('\n')[0].trim();
+              if (!msg || !sha) return;
+              if (seenShas.has(sha)) return;
+
+              seenShas.add(sha);
+
+              const line = `- **${repoLabel}** [\`${branchName}\`]: ${msg}`;
+              const cat = categorizeMessage(msg);
               buckets[cat].push(line);
 
               const lower = msgFull.toLowerCase();
@@ -115,30 +166,63 @@ jobs:
               ) {
                 inProgress.push(line);
               }
-            };
+            }
 
             for (const target of targets) {
               const { owner, repo } = target;
               const repoLabel = `${owner}/${repo}`;
 
               try {
-                core.info(`Reading commits from ${repoLabel} since ${since}`);
+                core.info(`Listing branches for ${repoLabel}`);
 
-                const commits = await github.paginate(
-                  github.rest.repos.listCommits,
-                  { owner, repo, since, per_page: 100 }
+                const branches = await github.paginate(
+                  github.rest.repos.listBranches,
+                  { owner, repo, per_page: 100 }
                 );
 
-                core.info(`Found ${commits.length} commits in ${repoLabel}`);
+                const includedBranches = branches
+                  .map(b => b.name)
+                  .filter(name => shouldIncludeBranch(name, target));
 
-                for (const c of commits) {
-                  const msgFull = c.commit?.message || '';
-                  addCommitToBuckets(repoLabel, msgFull);
+                core.info(`Included branches in ${repoLabel}: ${includedBranches.join(', ') || '(none)'}`);
+
+                if (includedBranches.length === 0) {
+                  warnings.push(`- No matching branches found in **${repoLabel}**.`);
+                  continue;
                 }
-              } catch (error) {
-                const message = error?.message || 'Unknown error';
-                core.warning(`Failed to read commits from ${repoLabel}: ${message}`);
-                warnings.push(`- Could not read commits from **${repoLabel}**: ${message}`);
+
+                for (const branchName of includedBranches) {
+                  try {
+                    core.info(`Reading commits from ${repoLabel} branch ${branchName} since ${since}`);
+
+                    const commits = await github.paginate(
+                      github.rest.repos.listCommits,
+                      {
+                        owner,
+                        repo,
+                        sha: branchName,
+                        since,
+                        per_page: 100
+                      }
+                    );
+
+                    core.info(`Found ${commits.length} commits in ${repoLabel} [${branchName}]`);
+
+                    for (const c of commits) {
+                      const sha = c.sha;
+                      const msgFull = c.commit?.message || '';
+                      addCommit(repoLabel, branchName, msgFull, sha);
+                    }
+                  } catch (branchError) {
+                    const message = branchError?.message || 'Unknown branch read error';
+                    core.warning(`Failed to read commits from ${repoLabel} [${branchName}]: ${message}`);
+                    warnings.push(`- Could not read commits from **${repoLabel}** branch \`${branchName}\`: ${message}`);
+                  }
+                }
+              } catch (repoError) {
+                const message = repoError?.message || 'Unknown repository error';
+                core.warning(`Failed to inspect repository ${repoLabel}: ${message}`);
+                warnings.push(`- Could not inspect repository **${repoLabel}**: ${message}`);
               }
             }
 
@@ -183,13 +267,16 @@ jobs:
               learned.push('- Improved stability by fixing bugs.');
             }
             if (nonEmpty(buckets.docs) || nonEmpty(buckets.chore)) {
-              learned.push('- Invested time in documentation and codebase cleanup.');
+              learned.push('- Invested time in documentation and cleanup.');
             }
             if (nonEmpty(buckets.ci)) {
               learned.push('- Improved CI/CD and automation understanding.');
             }
             if (nonEmpty(buckets.refactor)) {
               learned.push('- Practiced refactoring and design improvement.');
+            }
+            if (nonEmpty(buckets.test)) {
+              learned.push('- Added or improved validation through tests.');
             }
             if (!learned.length) {
               learned.push('- (reflect on key learnings from this week)');
