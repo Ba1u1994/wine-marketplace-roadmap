@@ -1,0 +1,674 @@
+name: devlog backfill secure summary
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Backfill start date (2025-10-01)"
+        required: true
+        type: string
+      end_date:
+        description: "Backfill end date (2026-03-31)"
+        required: true
+        type: string
+      overwrite_existing:
+        description: "Overwrite existing changelog files"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate input dates
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          START="${{ github.event.inputs.start_date }}"
+          END="${{ github.event.inputs.end_date }}"
+
+          if ! date -d "$START" >/dev/null 2>&1; then
+            echo "Invalid start_date: $START"
+            exit 1
+          fi
+
+          if ! date -d "$END" >/dev/null 2>&1; then
+            echo "Invalid end_date: $END"
+            exit 1
+          fi
+
+          if [ "$(date -d "$START" +%s)" -gt "$(date -d "$END" +%s)" ]; then
+            echo "start_date must be <= end_date"
+            exit 1
+          fi
+
+      - name: Prepare changelog directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p changelog
+
+      - name: Generate backfill changelog files
+        id: build
+        uses: actions/github-script@v7
+        env:
+          INPUT_START_DATE: ${{ github.event.inputs.start_date }}
+          INPUT_END_DATE: ${{ github.event.inputs.end_date }}
+          INPUT_OVERWRITE_EXISTING: ${{ github.event.inputs.overwrite_existing }}
+        with:
+          github-token: ${{ secrets.DEVLOG_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const startDateInput = process.env.INPUT_START_DATE;
+            const endDateInput = process.env.INPUT_END_DATE;
+            const overwriteExisting = String(process.env.INPUT_OVERWRITE_EXISTING).toLowerCase() === 'true';
+
+            const outputDir = 'changelog';
+
+            const targets = [
+              {
+                owner: 'wine-online-store',
+                repo: 'wine-marketplace',
+                visibility: 'private',
+                includeBranchPatterns: [
+                  /^main$/i,
+                  /^develop$/i,
+                  /^feature\//i,
+                  /^bugfix\//i,
+                  /^hotfix\//i,
+                  /^release\//i
+                ],
+                excludeBranchPatterns: [
+                  /^gh-pages$/i,
+                  /^dependabot\//i
+                ]
+              },
+              {
+                owner: 'Ba1u1994',
+                repo: 'wine-marketplace-roadmap',
+                visibility: 'public',
+                includeBranchPatterns: [
+                  /^main$/i,
+                  /^develop$/i,
+                  /^feature\//i,
+                  /^bugfix\//i,
+                  /^hotfix\//i,
+                  /^release\//i
+                ],
+                excludeBranchPatterns: [
+                  /^gh-pages$/i,
+                  /^dependabot\//i
+                ]
+              }
+            ];
+
+            const publicKeywords = {
+              features: /^feat(\(.+\))?:/i,
+              fixes: /^fix(\(.+\))?:/i,
+              docs: /^docs?(\(.+\))?:/i,
+              chore: /^chore(\(.+\))?:/i,
+              refactor: /^refactor(\(.+\))?:/i,
+              ci: /^ci(\(.+\))?:/i,
+              test: /^tests?(\(.+\))?:/i
+            };
+
+            function matchesAny(name, patterns) {
+              return patterns.some((p) => p.test(name));
+            }
+
+            function shouldIncludeBranch(branchName, target) {
+              if (matchesAny(branchName, target.excludeBranchPatterns || [])) {
+                return false;
+              }
+              if (!target.includeBranchPatterns?.length) {
+                return true;
+              }
+              return matchesAny(branchName, target.includeBranchPatterns);
+            }
+
+            function normalizeMessage(msgFull) {
+              return (msgFull || '').split('\n')[0].trim();
+            }
+
+            function detectPrivateCategory(msg, branch) {
+              const text = `${branch} ${msg}`.toLowerCase();
+
+              if (
+                text.includes('api') ||
+                text.includes('endpoint') ||
+                text.includes('controller') ||
+                text.includes('contract')
+              ) return 'api';
+
+              if (
+                text.includes('domain') ||
+                text.includes('aggregate') ||
+                text.includes('entity') ||
+                text.includes('valueobject') ||
+                text.includes('value-object') ||
+                text.includes('catalog') ||
+                text.includes('identity') ||
+                text.includes('orders')
+              ) return 'domain';
+
+              if (
+                text.includes('admin') ||
+                text.includes('ui') ||
+                text.includes('frontend') ||
+                text.includes('react') ||
+                text.includes('page') ||
+                text.includes('component')
+              ) return 'adminUi';
+
+              if (
+                text.includes('docs') ||
+                text.includes('readme') ||
+                text.includes('adr') ||
+                text.includes('architecture') ||
+                text.includes('roadmap')
+              ) return 'docs';
+
+              if (
+                text.includes('ci') ||
+                text.includes('workflow') ||
+                text.includes('pipeline') ||
+                text.includes('action') ||
+                text.includes('docker')
+              ) return 'ci';
+
+              if (
+                text.includes('refactor') ||
+                text.includes('cleanup') ||
+                text.includes('restructure')
+              ) return 'refactor';
+
+              if (
+                text.startsWith('fix') ||
+                text.includes('bug') ||
+                text.includes('error') ||
+                text.includes('exception') ||
+                text.includes('stability')
+              ) return 'fixes';
+
+              if (
+                text.startsWith('test') ||
+                text.includes('spec') ||
+                text.includes('coverage')
+              ) return 'tests';
+
+              if (
+                text.includes('research') ||
+                text.includes('investigate') ||
+                text.includes('spike') ||
+                text.includes('explore')
+              ) return 'research';
+
+              if (
+                text.startsWith('feat') ||
+                text.includes('service') ||
+                text.includes('handler') ||
+                text.includes('repository') ||
+                text.includes('migration') ||
+                text.includes('persistence') ||
+                text.includes('application')
+              ) return 'backend';
+
+              return 'other';
+            }
+
+            function monthNameUTC(dateObj) {
+              return dateObj.toLocaleString('en-US', {
+                month: 'long',
+                timeZone: 'UTC'
+              });
+            }
+
+            function formatDateUTC(dateObj) {
+              return dateObj.toISOString().slice(0, 10);
+            }
+
+            function startOfWeekUTC(dateObj) {
+              const d = new Date(Date.UTC(
+                dateObj.getUTCFullYear(),
+                dateObj.getUTCMonth(),
+                dateObj.getUTCDate()
+              ));
+              const day = d.getUTCDay(); // 0=Sun, 1=Mon
+              const diff = day === 0 ? -6 : 1 - day;
+              d.setUTCDate(d.getUTCDate() + diff);
+              d.setUTCHours(0, 0, 0, 0);
+              return d;
+            }
+
+            function addDaysUTC(dateObj, days) {
+              const d = new Date(dateObj.getTime());
+              d.setUTCDate(d.getUTCDate() + days);
+              return d;
+            }
+
+            function getMonthWeekNumber(weekStart) {
+              const year = weekStart.getUTCFullYear();
+              const month = weekStart.getUTCMonth();
+
+              let cursor = new Date(Date.UTC(year, month, 1));
+              cursor = startOfWeekUTC(cursor);
+
+              let week = 1;
+              while (cursor.getTime() < weekStart.getTime()) {
+                cursor = addDaysUTC(cursor, 7);
+                week++;
+              }
+
+              return week;
+            }
+
+            async function listIncludedBranches(github, target) {
+              const branches = await github.paginate(
+                github.rest.repos.listBranches,
+                {
+                  owner: target.owner,
+                  repo: target.repo,
+                  per_page: 100
+                }
+              );
+
+              return branches
+                .map(b => b.name)
+                .filter(name => shouldIncludeBranch(name, target));
+            }
+
+            function makeWeekState() {
+              return {
+                warnings: [],
+                seenShas: new Set(),
+                summary: {
+                  private: {
+                    backend: 0,
+                    domain: 0,
+                    api: 0,
+                    adminUi: 0,
+                    docs: 0,
+                    ci: 0,
+                    refactor: 0,
+                    fixes: 0,
+                    tests: 0,
+                    research: 0,
+                    other: 0
+                  },
+                  public: {
+                    features: [],
+                    fixes: [],
+                    docs: [],
+                    chore: [],
+                    refactor: [],
+                    ci: [],
+                    test: [],
+                    other: []
+                  }
+                }
+              };
+            }
+
+            function addPrivateCommit(state, msg, branch, sha) {
+              if (!sha || state.seenShas.has(sha)) return;
+              state.seenShas.add(sha);
+
+              const cat = detectPrivateCategory(msg, branch);
+              state.summary.private[cat]++;
+            }
+
+            function addPublicCommit(state, msg, branch, sha, repoLabel) {
+              if (!sha || state.seenShas.has(sha)) return;
+              state.seenShas.add(sha);
+
+              let bucket = 'other';
+              for (const [key, regex] of Object.entries(publicKeywords)) {
+                if (regex.test(msg)) {
+                  bucket = key;
+                  break;
+                }
+              }
+
+              state.summary.public[bucket].push(`- **${repoLabel}** [\`${branch}\`]: ${msg}`);
+            }
+
+            function hasPrivateActivity(state) {
+              return Object.values(state.summary.private).some(v => v > 0);
+            }
+
+            function hasPublicActivity(state) {
+              return Object.values(state.summary.public).some(arr => Array.isArray(arr) && arr.length > 0);
+            }
+
+            function buildAccomplished(state) {
+              const lines = [];
+
+              if (hasPrivateActivity(state)) {
+                lines.push('### Private product development');
+                if (state.summary.private.backend > 0) {
+                  lines.push('- Advanced backend implementation work across active development branches.');
+                }
+                if (state.summary.private.domain > 0) {
+                  lines.push('- Continued domain modeling and core service design work.');
+                }
+                if (state.summary.private.api > 0) {
+                  lines.push('- Refined API and integration-facing implementation details.');
+                }
+                if (state.summary.private.adminUi > 0) {
+                  lines.push('- Progressed internal/admin user interface work.');
+                }
+                if (state.summary.private.refactor > 0) {
+                  lines.push('- Improved maintainability through refactoring and internal cleanup.');
+                }
+                if (state.summary.private.fixes > 0) {
+                  lines.push('- Addressed stability and bug-fix work in ongoing development areas.');
+                }
+                if (state.summary.private.tests > 0) {
+                  lines.push('- Strengthened validation and quality through test-related work.');
+                }
+                if (state.summary.private.ci > 0) {
+                  lines.push('- Improved development workflow and automation support.');
+                }
+                if (state.summary.private.docs > 0) {
+                  lines.push('- Updated internal technical documentation and architecture notes.');
+                }
+                if (state.summary.private.research > 0) {
+                  lines.push('- Continued research and technical exploration for upcoming implementation decisions.');
+                }
+                if (state.summary.private.other > 0) {
+                  lines.push('- Made additional implementation progress across active branches.');
+                }
+                lines.push('');
+              }
+
+              if (hasPublicActivity(state)) {
+                lines.push('### Public roadmap and documentation');
+                if (state.summary.public.features.length) {
+                  lines.push('#### Features');
+                  lines.push(...state.summary.public.features);
+                  lines.push('');
+                }
+                if (state.summary.public.fixes.length) {
+                  lines.push('#### Fixes');
+                  lines.push(...state.summary.public.fixes);
+                  lines.push('');
+                }
+                if (state.summary.public.docs.length) {
+                  lines.push('#### Docs');
+                  lines.push(...state.summary.public.docs);
+                  lines.push('');
+                }
+                if (state.summary.public.chore.length) {
+                  lines.push('#### Chores / Cleanup');
+                  lines.push(...state.summary.public.chore);
+                  lines.push('');
+                }
+                if (state.summary.public.refactor.length) {
+                  lines.push('#### Refactors');
+                  lines.push(...state.summary.public.refactor);
+                  lines.push('');
+                }
+                if (state.summary.public.ci.length) {
+                  lines.push('#### CI / Automation');
+                  lines.push(...state.summary.public.ci);
+                  lines.push('');
+                }
+                if (state.summary.public.test.length) {
+                  lines.push('#### Tests');
+                  lines.push(...state.summary.public.test);
+                  lines.push('');
+                }
+                if (state.summary.public.other.length) {
+                  lines.push('#### Other Work');
+                  lines.push(...state.summary.public.other);
+                  lines.push('');
+                }
+              }
+
+              if (!lines.length) {
+                return '- (no commits found in this period)';
+              }
+
+              return lines.join('\n').trimEnd();
+            }
+
+            function buildInProgress(state) {
+              const lines = [];
+
+              if (hasPrivateActivity(state)) {
+                lines.push('- Continued implementation work across active private development branches.');
+              }
+              if (
+                state.summary.private.domain > 0 ||
+                state.summary.private.backend > 0 ||
+                state.summary.private.api > 0
+              ) {
+                lines.push('- Ongoing refinement of backend architecture, domain boundaries, and service behavior.');
+              }
+              if (state.summary.private.adminUi > 0) {
+                lines.push('- Internal UI/admin-facing improvements remain in progress.');
+              }
+              if (
+                state.summary.public.docs.length ||
+                state.summary.public.features.length ||
+                state.summary.public.refactor.length
+              ) {
+                lines.push('- Public roadmap and delivery documentation continue to evolve with the project.');
+              }
+
+              if (!lines.length) {
+                lines.push('- (update ongoing work here)');
+              }
+
+              return Array.from(new Set(lines)).join('\n');
+            }
+
+            function buildLearned(state) {
+              const lines = [];
+
+              if (hasPrivateActivity(state)) {
+                lines.push('- Weekly progress is better represented by active development branches than by release-only branches.');
+              }
+              if (state.summary.private.refactor > 0 || state.summary.private.domain > 0) {
+                lines.push('- Ongoing work reinforced the value of keeping architecture and implementation boundaries explicit.');
+              }
+              if (state.summary.private.ci > 0 || state.summary.public.ci.length) {
+                lines.push('- Automation and documentation workflows benefit from stricter repository and branch assumptions.');
+              }
+              if (hasPrivateActivity(state)) {
+                lines.push('- Public-facing devlogs are safer and more useful when private implementation details are summarized at a higher level.');
+              }
+
+              if (!lines.length) {
+                lines.push('- (reflect on key learnings from this week)');
+              }
+
+              return Array.from(new Set(lines)).join('\n');
+            }
+
+            function buildNotes(state) {
+              if (state.warnings.length) {
+                return [
+                  '## ⚠️ Notes',
+                  ...state.warnings
+                ].join('\n');
+              }
+
+              if (hasPrivateActivity(state)) {
+                return [
+                  '## ⚠️ Notes',
+                  '- Private repository activity is intentionally summarized at a high level.'
+                ].join('\n');
+              }
+
+              return '';
+            }
+
+            function buildMarkdown(state, weekStart, weekEndExclusive) {
+              const year = weekStart.getUTCFullYear();
+              const monthName = monthNameUTC(weekStart);
+              const weekNumber = getMonthWeekNumber(weekStart);
+              const createdDate = formatDateUTC(weekEndExclusive > new Date() ? new Date() : addDaysUTC(weekEndExclusive, -1));
+
+              const accomplished = buildAccomplished(state);
+              const inProgress = buildInProgress(state);
+              const learned = buildLearned(state);
+              const notes = buildNotes(state);
+
+              return [
+                `# Week ${weekNumber} – ${monthName} ${year}`,
+                '',
+                `_Date created:_ ${createdDate}`,
+                '',
+                '## ✅ What I accomplished',
+                accomplished,
+                '',
+                '## 🔧 In progress',
+                inProgress,
+                '',
+                '## 🧠 What I learned',
+                learned,
+                notes ? `\n${notes}` : ''
+              ].join('\n').trimEnd() + '\n';
+            }
+
+            const inputStart = new Date(`${startDateInput}T00:00:00Z`);
+            const inputEnd = new Date(`${endDateInput}T00:00:00Z`);
+
+            const backfillStart = startOfWeekUTC(inputStart);
+            const backfillEndExclusive = addDaysUTC(startOfWeekUTC(inputEnd), 7);
+
+            core.info(`Backfill window: ${formatDateUTC(backfillStart)} -> ${formatDateUTC(backfillEndExclusive)} (exclusive)`);
+
+            const targetBranches = new Map();
+
+            for (const target of targets) {
+              const repoLabel = `${target.owner}/${target.repo}`;
+              try {
+                const branches = await listIncludedBranches(github, target);
+                targetBranches.set(repoLabel, branches);
+                core.info(`Included branches for ${repoLabel}: ${branches.join(', ') || '(none)'}`);
+              } catch (error) {
+                const message = error?.message || 'Unknown branch listing error';
+                core.warning(`Failed to list branches for ${repoLabel}: ${message}`);
+                targetBranches.set(repoLabel, []);
+              }
+            }
+
+            let createdCount = 0;
+            let updatedCount = 0;
+            let skippedCount = 0;
+
+            for (let weekStart = new Date(backfillStart.getTime());
+                 weekStart < backfillEndExclusive;
+                 weekStart = addDaysUTC(weekStart, 7)) {
+
+              const weekEndExclusive = addDaysUTC(weekStart, 7);
+              const state = makeWeekState();
+
+              for (const target of targets) {
+                const repoLabel = `${target.owner}/${target.repo}`;
+                const includedBranches = targetBranches.get(repoLabel) || [];
+
+                if (!includedBranches.length) {
+                  state.warnings.push(`- No matching branches found in **${repoLabel}**.`);
+                  continue;
+                }
+
+                for (const branchName of includedBranches) {
+                  try {
+                    const commits = await github.paginate(
+                      github.rest.repos.listCommits,
+                      {
+                        owner: target.owner,
+                        repo: target.repo,
+                        sha: branchName,
+                        since: weekStart.toISOString(),
+                        until: weekEndExclusive.toISOString(),
+                        per_page: 100
+                      }
+                    );
+
+                    for (const c of commits) {
+                      const sha = c.sha;
+                      const msg = normalizeMessage(c.commit?.message || '');
+                      if (!msg) continue;
+
+                      if (target.visibility === 'private') {
+                        addPrivateCommit(state, msg, branchName, sha);
+                      } else {
+                        addPublicCommit(state, msg, branchName, sha, repoLabel);
+                      }
+                    }
+                  } catch (error) {
+                    const message = error?.message || 'Unknown branch read error';
+                    state.warnings.push(`- Could not read commits from **${repoLabel}** branch \`${branchName}\`: ${message}`);
+                  }
+                }
+              }
+
+              const year = weekStart.getUTCFullYear();
+              const month = String(weekStart.getUTCMonth() + 1).padStart(2, '0');
+              const weekNumber = String(getMonthWeekNumber(weekStart)).padStart(2, '0');
+              const filename = `${year}-${month}-week-${weekNumber}.md`;
+              const filepath = path.join(outputDir, filename);
+
+              if (fs.existsSync(filepath) && !overwriteExisting) {
+                core.info(`Skipping existing file: ${filepath}`);
+                skippedCount++;
+                continue;
+              }
+
+              const markdown = buildMarkdown(state, weekStart, weekEndExclusive);
+              const existedBefore = fs.existsSync(filepath);
+
+              fs.writeFileSync(filepath, markdown, 'utf8');
+
+              if (existedBefore) {
+                updatedCount++;
+                core.info(`Updated ${filepath}`);
+              } else {
+                createdCount++;
+                core.info(`Created ${filepath}`);
+              }
+            }
+
+            core.setOutput('created_count', String(createdCount));
+            core.setOutput('updated_count', String(updatedCount));
+            core.setOutput('skipped_count', String(skippedCount));
+
+      - name: Commit and push backfill changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "ba1u-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+          git add changelog/
+
+          if git diff --cached --quiet; then
+            echo "No backfill changes to commit"
+            exit 0
+          fi
+
+          git commit -m "chore(devlog): backfill changelog entries"
+          git push
+
+      - name: Print backfill summary
+        shell: bash
+        run: |
+          echo "Created: ${{ steps.build.outputs.created_count }}"
+          echo "Updated: ${{ steps.build.outputs.updated_count }}"
+          echo "Skipped: ${{ steps.build.outputs.skipped_count }}"
