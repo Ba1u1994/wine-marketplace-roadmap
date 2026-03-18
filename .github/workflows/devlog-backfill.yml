@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       start_date:
-        description: "Backfill start date (2025-10-01)"
+        description: "Backfill start date (YYYY-MM-DD)"
         required: true
         type: string
       end_date:
-        description: "Backfill end date (2026-03-31)"
+        description: "Backfill end date (YYYY-MM-DD)"
         required: true
         type: string
       overwrite_existing:
