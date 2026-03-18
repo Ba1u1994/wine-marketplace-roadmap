@@ -2,7 +2,7 @@ name: weekly devlog stub
 
 on:
   schedule:
-    - cron: "0 7 * * MON"   # Every Monday 07:00 UTC (11:00 Tbilisi)
+    - cron: "0 7 * * MON" # Every Monday 07:00 UTC (11:00 Tbilisi)
   workflow_dispatch:
 
 permissions:
@@ -11,11 +11,12 @@ permissions:
 jobs:
   make-entry:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compute filename
+      - name: Compute filename and metadata
         id: meta
         shell: bash
         run: |
@@ -24,6 +25,8 @@ jobs:
 
           Y=$(date +%Y)
           M=$(date +%m)
+          MONTH_NAME=$(date +%B)
+          TODAY=$(date +%F)
 
           mkdir -p changelog
 
@@ -35,27 +38,33 @@ jobs:
               max=$n
             fi
           done
+
           NEXT=$(printf "%02d" $((max + 1)))
 
           echo "filename=changelog/${Y}-${M}-week-${NEXT}.md" >> "$GITHUB_OUTPUT"
-          echo "y=$Y" >> "$GITHUB_OUTPUT"
-          echo "m=$M" >> "$GITHUB_OUTPUT"
-          echo "w=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "year=$Y" >> "$GITHUB_OUTPUT"
+          echo "month=$M" >> "$GITHUB_OUTPUT"
+          echo "month_name=$MONTH_NAME" >> "$GITHUB_OUTPUT"
+          echo "week=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "today=$TODAY" >> "$GITHUB_OUTPUT"
 
       - name: Build markdown content from commits
         id: build
         uses: actions/github-script@v7
         env:
-          YEAR: ${{ steps.meta.outputs.y }}
-          MONTH: ${{ steps.meta.outputs.m }}
-          WEEK: ${{ steps.meta.outputs.w }}
+          YEAR: ${{ steps.meta.outputs.year }}
+          MONTH: ${{ steps.meta.outputs.month }}
+          MONTH_NAME: ${{ steps.meta.outputs.month_name }}
+          WEEK: ${{ steps.meta.outputs.week }}
+          TODAY: ${{ steps.meta.outputs.today }}
         with:
           github-token: ${{ secrets.DEVLOG_TOKEN }}
           script: |
-            const owner = 'Ba1u1994';
-            const repos = ['wine-marketplace', 'wine-marketplace-roadmap'];
+            const targets = [
+              { owner: 'wine-online-store', repo: 'wine-marketplace' },
+              { owner: 'Ba1u1994', repo: 'wine-marketplace-roadmap' }
+            ];
 
-            // ბოლო 7 დღის commit-ები
             const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
             const buckets = {
@@ -69,59 +78,82 @@ jobs:
               other: []
             };
 
-            const inProgress = [];  // commit-ები, სადაც ჩანს "wip", "draft", "in progress"
+            const inProgress = [];
+            const warnings = [];
+
             const keywords = {
-              feat: /^feat/i,
-              fix: /^fix/i,
-              docs: /^docs?/i,
-              chore: /^chore/i,
-              refactor: /^refactor/i,
-              ci: /^ci/i,
-              test: /^tests?/i
+              feat: /^feat(\(.+\))?:/i,
+              fix: /^fix(\(.+\))?:/i,
+              docs: /^docs?(\(.+\))?:/i,
+              chore: /^chore(\(.+\))?:/i,
+              refactor: /^refactor(\(.+\))?:/i,
+              ci: /^ci(\(.+\))?:/i,
+              test: /^tests?(\(.+\))?:/i
             };
 
-            for (const repo of repos) {
-              const commits = await github.paginate(
-                github.rest.repos.listCommits,
-                { owner, repo, since }
-              );
+            const addCommitToBuckets = (repoLabel, msgFull) => {
+              const msg = (msgFull || '').split('\n')[0].trim();
+              if (!msg) return;
 
-              for (const c of commits) {
-                const msgFull = c.commit.message || '';
-                const msg = msgFull.split('\n')[0]; // პირველი ხაზი
-                const line = `- **${repo}**: ${msg}`;
+              const line = `- **${repoLabel}**: ${msg}`;
 
-                let cat = 'other';
-                for (const [key, regex] of Object.entries(keywords)) {
-                  if (regex.test(msg)) {
-                    cat = key;
-                    break;
-                  }
+              let cat = 'other';
+              for (const [key, regex] of Object.entries(keywords)) {
+                if (regex.test(msg)) {
+                  cat = key;
+                  break;
                 }
-                buckets[cat].push(line);
+              }
 
-                const lower = msgFull.toLowerCase();
-                if (lower.includes('wip') ||
-                    lower.includes('in progress') ||
-                    lower.includes('draft')) {
-                  inProgress.push(line);
+              buckets[cat].push(line);
+
+              const lower = msgFull.toLowerCase();
+              if (
+                lower.includes('wip') ||
+                lower.includes('in progress') ||
+                lower.includes('draft')
+              ) {
+                inProgress.push(line);
+              }
+            };
+
+            for (const target of targets) {
+              const { owner, repo } = target;
+              const repoLabel = `${owner}/${repo}`;
+
+              try {
+                core.info(`Reading commits from ${repoLabel} since ${since}`);
+
+                const commits = await github.paginate(
+                  github.rest.repos.listCommits,
+                  { owner, repo, since, per_page: 100 }
+                );
+
+                core.info(`Found ${commits.length} commits in ${repoLabel}`);
+
+                for (const c of commits) {
+                  const msgFull = c.commit?.message || '';
+                  addCommitToBuckets(repoLabel, msgFull);
                 }
+              } catch (error) {
+                const message = error?.message || 'Unknown error';
+                core.warning(`Failed to read commits from ${repoLabel}: ${message}`);
+                warnings.push(`- Could not read commits from **${repoLabel}**: ${message}`);
               }
             }
 
-            const nonEmpty = (arr) => arr && arr.length > 0;
+            const nonEmpty = (arr) => Array.isArray(arr) && arr.length > 0;
 
-            // შეაგროვეთ "What I accomplished" ტექსტი კატეგორიების მიხედვით
             let accomplished = '';
             const sections = [
-              ['feat',     '### Features'],
-              ['fix',      '### Fixes'],
-              ['docs',     '### Docs'],
-              ['chore',    '### Chores / Cleanup'],
+              ['feat', '### Features'],
+              ['fix', '### Fixes'],
+              ['docs', '### Docs'],
+              ['chore', '### Chores / Cleanup'],
               ['refactor', '### Refactors'],
-              ['ci',       '### CI / Automation'],
-              ['test',     '### Tests'],
-              ['other',    '### Other Work']
+              ['ci', '### CI / Automation'],
+              ['test', '### Tests'],
+              ['other', '### Other Work']
             ];
 
             for (const [key, title] of sections) {
@@ -132,11 +164,10 @@ jobs:
               }
             }
 
-            if (!accomplished) {
-              accomplished = '- (no commits found in the last 7 days)';
+            if (!accomplished.trim()) {
+              accomplished = '- (no commits found in the last 7 days)\n';
             }
 
-            // "In progress" – WIP commit-ები თუ არსებობს
             let inProgText = '';
             if (nonEmpty(inProgress)) {
               inProgText = inProgress.join('\n');
@@ -144,10 +175,9 @@ jobs:
               inProgText = '- (update ongoing work here)';
             }
 
-            // "What I learned" – მაღალი დონის შაბლონი კატეგორიების მიხედვით
             const learned = [];
             if (nonEmpty(buckets.feat)) {
-              learned.push('- Built or extended new features (feature work).');
+              learned.push('- Built or extended new features.');
             }
             if (nonEmpty(buckets.fix)) {
               learned.push('- Improved stability by fixing bugs.');
@@ -156,22 +186,31 @@ jobs:
               learned.push('- Invested time in documentation and codebase cleanup.');
             }
             if (nonEmpty(buckets.ci)) {
-              learned.push('- Learned more about CI/CD and automation workflows.');
+              learned.push('- Improved CI/CD and automation understanding.');
             }
             if (nonEmpty(buckets.refactor)) {
-              learned.push('- Practiced refactoring and improving existing design.');
+              learned.push('- Practiced refactoring and design improvement.');
             }
-            if (learned.length === 0) {
+            if (!learned.length) {
               learned.push('- (reflect on key learnings from this week)');
             }
 
+            let warningText = '';
+            if (nonEmpty(warnings)) {
+              warningText = [
+                '',
+                '## ⚠️ Notes',
+                ...warnings
+              ].join('\n');
+            }
+
             const year = process.env.YEAR;
-            const month = process.env.MONTH;
-            const week = process.env.WEEK;
-            const today = new Date().toISOString().slice(0, 10);
+            const monthName = process.env.MONTH_NAME;
+            const week = String(parseInt(process.env.WEEK, 10));
+            const today = process.env.TODAY;
 
             const markdown = [
-              `# Week ${week} – ${year}-${month}`,
+              `# Week ${week} – ${monthName} ${year}`,
               '',
               `_Date created:_ ${today}`,
               '',
@@ -182,7 +221,8 @@ jobs:
               inProgText,
               '',
               '## 🧠 What I learned',
-              learned.join('\n')
+              learned.join('\n'),
+              warningText
             ].join('\n');
 
             core.setOutput('content', markdown);
@@ -192,18 +232,32 @@ jobs:
         run: |
           set -euo pipefail
           file="${{ steps.meta.outputs.filename }}"
+
           if [ -f "$file" ]; then
-            echo "File exists: $file (skipping write)"
+            echo "File already exists: $file"
             exit 0
           fi
 
-          printf '%s\n' "${{ steps.build.outputs.content }}" > "$file"
+          cat > "$file" <<'EOF'
+          ${{ steps.build.outputs.content }}
+          EOF
+
+          echo "Created $file"
 
       - name: Commit and push
         shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "ba1u-bot"
           git config user.email "actions@users.noreply.github.com"
+
           git add "${{ steps.meta.outputs.filename }}"
-          git commit -m "chore(devlog): create ${{ steps.meta.outputs.filename }}" || exit 0
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "chore(devlog): create ${{ steps.meta.outputs.filename }}"
           git push
