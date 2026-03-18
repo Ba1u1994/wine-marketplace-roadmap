@@ -1,4 +1,4 @@
-name: weekly devlog stub
+name: weekly devlog secure summary
 
 on:
   schedule:
@@ -48,12 +48,11 @@ jobs:
           echo "week=$NEXT" >> "$GITHUB_OUTPUT"
           echo "today=$TODAY" >> "$GITHUB_OUTPUT"
 
-      - name: Build markdown content from commits
+      - name: Build secure markdown summary
         id: build
         uses: actions/github-script@v7
         env:
           YEAR: ${{ steps.meta.outputs.year }}
-          MONTH: ${{ steps.meta.outputs.month }}
           MONTH_NAME: ${{ steps.meta.outputs.month_name }}
           WEEK: ${{ steps.meta.outputs.week }}
           TODAY: ${{ steps.meta.outputs.today }}
@@ -64,6 +63,7 @@ jobs:
               {
                 owner: 'wine-online-store',
                 repo: 'wine-marketplace',
+                visibility: 'private',
                 includeBranchPatterns: [
                   /^main$/i,
                   /^develop$/i,
@@ -80,6 +80,7 @@ jobs:
               {
                 owner: 'Ba1u1994',
                 repo: 'wine-marketplace-roadmap',
+                visibility: 'public',
                 includeBranchPatterns: [
                   /^main$/i,
                   /^develop$/i,
@@ -97,24 +98,39 @@ jobs:
 
             const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-            const buckets = {
-              feat: [],
-              fix: [],
-              docs: [],
-              chore: [],
-              refactor: [],
-              ci: [],
-              test: [],
-              other: []
+            const seenShas = new Set();
+            const warnings = [];
+            const inProgressFlags = [];
+
+            const summary = {
+              private: {
+                backend: 0,
+                domain: 0,
+                api: 0,
+                adminUi: 0,
+                docs: 0,
+                ci: 0,
+                refactor: 0,
+                fixes: 0,
+                tests: 0,
+                research: 0,
+                other: 0
+              },
+              public: {
+                features: [],
+                fixes: [],
+                docs: [],
+                chore: [],
+                refactor: [],
+                ci: [],
+                test: [],
+                other: []
+              }
             };
 
-            const inProgress = [];
-            const warnings = [];
-            const seenShas = new Set();
-
-            const keywords = {
-              feat: /^feat(\(.+\))?:/i,
-              fix: /^fix(\(.+\))?:/i,
+            const publicKeywords = {
+              features: /^feat(\(.+\))?:/i,
+              fixes: /^fix(\(.+\))?:/i,
               docs: /^docs?(\(.+\))?:/i,
               chore: /^chore(\(.+\))?:/i,
               refactor: /^refactor(\(.+\))?:/i,
@@ -130,46 +146,145 @@ jobs:
               if (matchesAny(branchName, target.excludeBranchPatterns || [])) {
                 return false;
               }
-
-              if (!target.includeBranchPatterns || target.includeBranchPatterns.length === 0) {
+              if (!target.includeBranchPatterns?.length) {
                 return true;
               }
-
               return matchesAny(branchName, target.includeBranchPatterns);
             }
 
-            function categorizeMessage(msg) {
-              for (const [key, regex] of Object.entries(keywords)) {
-                if (regex.test(msg)) {
-                  return key;
-                }
-              }
+            function normalizeMessage(msgFull) {
+              return (msgFull || '').split('\n')[0].trim();
+            }
+
+            function detectPrivateCategory(msg, branch) {
+              const text = `${branch} ${msg}`.toLowerCase();
+
+              if (
+                text.includes('api') ||
+                text.includes('endpoint') ||
+                text.includes('controller') ||
+                text.includes('contract')
+              ) return 'api';
+
+              if (
+                text.includes('domain') ||
+                text.includes('aggregate') ||
+                text.includes('entity') ||
+                text.includes('valueobject') ||
+                text.includes('value-object') ||
+                text.includes('catalog') ||
+                text.includes('identity') ||
+                text.includes('orders')
+              ) return 'domain';
+
+              if (
+                text.includes('admin') ||
+                text.includes('ui') ||
+                text.includes('frontend') ||
+                text.includes('react') ||
+                text.includes('page') ||
+                text.includes('component')
+              ) return 'adminUi';
+
+              if (
+                text.includes('docs') ||
+                text.includes('readme') ||
+                text.includes('adr') ||
+                text.includes('architecture') ||
+                text.includes('roadmap')
+              ) return 'docs';
+
+              if (
+                text.includes('ci') ||
+                text.includes('workflow') ||
+                text.includes('pipeline') ||
+                text.includes('action') ||
+                text.includes('docker')
+              ) return 'ci';
+
+              if (
+                text.includes('refactor') ||
+                text.includes('cleanup') ||
+                text.includes('restructure')
+              ) return 'refactor';
+
+              if (
+                text.startsWith('fix') ||
+                text.includes('bug') ||
+                text.includes('error') ||
+                text.includes('exception') ||
+                text.includes('stability')
+              ) return 'fixes';
+
+              if (
+                text.startsWith('test') ||
+                text.includes('spec') ||
+                text.includes('coverage')
+              ) return 'tests';
+
+              if (
+                text.includes('research') ||
+                text.includes('investigate') ||
+                text.includes('spike') ||
+                text.includes('explore')
+              ) return 'research';
+
+              if (
+                text.startsWith('feat') ||
+                text.includes('service') ||
+                text.includes('handler') ||
+                text.includes('repository') ||
+                text.includes('migration') ||
+                text.includes('persistence') ||
+                text.includes('application')
+              ) return 'backend';
+
               return 'other';
             }
 
-            function addCommit(repoLabel, branchName, msgFull, sha) {
-              const msg = (msgFull || '').split('\n')[0].trim();
-              if (!msg || !sha) return;
-              if (seenShas.has(sha)) return;
-
+            function addPrivateCommit(msg, branch, sha) {
+              if (!sha || seenShas.has(sha)) return;
               seenShas.add(sha);
 
-              const line = `- **${repoLabel}** [\`${branchName}\`]: ${msg}`;
-              const cat = categorizeMessage(msg);
-              buckets[cat].push(line);
+              const cat = detectPrivateCategory(msg, branch);
+              summary.private[cat]++;
 
-              const lower = msgFull.toLowerCase();
+              const lower = msg.toLowerCase();
               if (
                 lower.includes('wip') ||
-                lower.includes('in progress') ||
-                lower.includes('draft')
+                lower.includes('draft') ||
+                lower.includes('in progress')
               ) {
-                inProgress.push(line);
+                inProgressFlags.push(cat);
+              }
+            }
+
+            function addPublicCommit(msg, branch, sha, repoLabel) {
+              if (!sha || seenShas.has(sha)) return;
+              seenShas.add(sha);
+
+              let bucket = 'other';
+              for (const [key, regex] of Object.entries(publicKeywords)) {
+                if (regex.test(msg)) {
+                  bucket = key;
+                  break;
+                }
+              }
+
+              summary.public[bucket].push(`- **${repoLabel}** [\`${branch}\`]: ${msg}`);
+
+              const lower = msg.toLowerCase();
+              if (
+                lower.includes('wip') ||
+                lower.includes('draft') ||
+                lower.includes('in progress')
+              ) {
+                inProgressFlags.push(bucket);
               }
             }
 
             for (const target of targets) {
-              const { owner, repo } = target;
+              const { owner, repo, visibility } = target;
               const repoLabel = `${owner}/${repo}`;
 
               try {
@@ -186,15 +301,13 @@ jobs:
 
                 core.info(`Included branches in ${repoLabel}: ${includedBranches.join(', ') || '(none)'}`);
 
-                if (includedBranches.length === 0) {
+                if (!includedBranches.length) {
                   warnings.push(`- No matching branches found in **${repoLabel}**.`);
                   continue;
                 }
 
                 for (const branchName of includedBranches) {
                   try {
-                    core.info(`Reading commits from ${repoLabel} branch ${branchName} since ${since}`);
-
                     const commits = await github.paginate(
                       github.rest.repos.listCommits,
                       {
@@ -210,8 +323,14 @@ jobs:
 
                     for (const c of commits) {
                       const sha = c.sha;
-                      const msgFull = c.commit?.message || '';
-                      addCommit(repoLabel, branchName, msgFull, sha);
+                      const msg = normalizeMessage(c.commit?.message || '');
+                      if (!msg) continue;
+
+                      if (visibility === 'private') {
+                        addPrivateCommit(msg, branchName, sha);
+                      } else {
+                        addPublicCommit(msg, branchName, sha, repoLabel);
+                      }
                     }
                   } catch (branchError) {
                     const message = branchError?.message || 'Unknown branch read error';
@@ -226,68 +345,166 @@ jobs:
               }
             }
 
-            const nonEmpty = (arr) => Array.isArray(arr) && arr.length > 0;
+            function hasPrivateActivity() {
+              return Object.values(summary.private).some(v => v > 0);
+            }
 
-            let accomplished = '';
-            const sections = [
-              ['feat', '### Features'],
-              ['fix', '### Fixes'],
-              ['docs', '### Docs'],
-              ['chore', '### Chores / Cleanup'],
-              ['refactor', '### Refactors'],
-              ['ci', '### CI / Automation'],
-              ['test', '### Tests'],
-              ['other', '### Other Work']
-            ];
+            function hasPublicActivity() {
+              return Object.values(summary.public).some(arr => Array.isArray(arr) && arr.length > 0);
+            }
 
-            for (const [key, title] of sections) {
-              const items = buckets[key];
-              if (nonEmpty(items)) {
-                accomplished += `${title}\n`;
-                accomplished += items.join('\n') + '\n\n';
+            function buildAccomplished() {
+              const lines = [];
+
+              if (hasPrivateActivity()) {
+                lines.push('### Private product development');
+                if (summary.private.backend > 0) {
+                  lines.push('- Advanced backend implementation work across active development branches.');
+                }
+                if (summary.private.domain > 0) {
+                  lines.push('- Continued domain modeling and core service design work.');
+                }
+                if (summary.private.api > 0) {
+                  lines.push('- Refined API and integration-facing implementation details.');
+                }
+                if (summary.private.adminUi > 0) {
+                  lines.push('- Progressed internal/admin user interface work.');
+                }
+                if (summary.private.refactor > 0) {
+                  lines.push('- Improved maintainability through refactoring and internal cleanup.');
+                }
+                if (summary.private.fixes > 0) {
+                  lines.push('- Addressed stability and bug-fix work in ongoing development areas.');
+                }
+                if (summary.private.tests > 0) {
+                  lines.push('- Strengthened validation and quality through test-related work.');
+                }
+                if (summary.private.ci > 0) {
+                  lines.push('- Improved development workflow and automation support.');
+                }
+                if (summary.private.docs > 0) {
+                  lines.push('- Updated internal technical documentation and architecture notes.');
+                }
+                if (summary.private.research > 0) {
+                  lines.push('- Continued research and technical exploration for upcoming implementation decisions.');
+                }
+                if (summary.private.other > 0) {
+                  lines.push('- Made additional implementation progress across active branches.');
+                }
+                lines.push('');
               }
+
+              if (hasPublicActivity()) {
+                lines.push('### Public roadmap and documentation');
+                if (summary.public.features.length) {
+                  lines.push('#### Features');
+                  lines.push(...summary.public.features);
+                  lines.push('');
+                }
+                if (summary.public.fixes.length) {
+                  lines.push('#### Fixes');
+                  lines.push(...summary.public.fixes);
+                  lines.push('');
+                }
+                if (summary.public.docs.length) {
+                  lines.push('#### Docs');
+                  lines.push(...summary.public.docs);
+                  lines.push('');
+                }
+                if (summary.public.chore.length) {
+                  lines.push('#### Chores / Cleanup');
+                  lines.push(...summary.public.chore);
+                  lines.push('');
+                }
+                if (summary.public.refactor.length) {
+                  lines.push('#### Refactors');
+                  lines.push(...summary.public.refactor);
+                  lines.push('');
+                }
+                if (summary.public.ci.length) {
+                  lines.push('#### CI / Automation');
+                  lines.push(...summary.public.ci);
+                  lines.push('');
+                }
+                if (summary.public.test.length) {
+                  lines.push('#### Tests');
+                  lines.push(...summary.public.test);
+                  lines.push('');
+                }
+                if (summary.public.other.length) {
+                  lines.push('#### Other Work');
+                  lines.push(...summary.public.other);
+                  lines.push('');
+                }
+              }
+
+              if (!lines.length) {
+                return '- (no commits found in the last 7 days)';
+              }
+
+              return lines.join('\n').trimEnd();
             }
 
-            if (!accomplished.trim()) {
-              accomplished = '- (no commits found in the last 7 days)\n';
+            function buildInProgress() {
+              const lines = [];
+
+              if (hasPrivateActivity()) {
+                lines.push('- Continued implementation work across active private development branches.');
+              }
+              if (summary.private.domain > 0 || summary.private.backend > 0 || summary.private.api > 0) {
+                lines.push('- Ongoing refinement of backend architecture, domain boundaries, and service behavior.');
+              }
+              if (summary.private.adminUi > 0) {
+                lines.push('- Internal UI/admin-facing improvements remain in progress.');
+              }
+              if (summary.public.docs.length || summary.public.features.length || summary.public.refactor.length) {
+                lines.push('- Public roadmap and delivery documentation continue to evolve with the project.');
+              }
+              if (!lines.length) {
+                lines.push('- (update ongoing work here)');
+              }
+
+              return Array.from(new Set(lines)).join('\n');
             }
 
-            let inProgText = '';
-            if (nonEmpty(inProgress)) {
-              inProgText = inProgress.join('\n');
-            } else {
-              inProgText = '- (update ongoing work here)';
+            function buildLearned() {
+              const lines = [];
+
+              if (hasPrivateActivity()) {
+                lines.push('- Weekly progress is better represented by active development branches than by release-only branches.');
+              }
+              if (summary.private.refactor > 0 || summary.private.domain > 0) {
+                lines.push('- Ongoing work reinforced the value of keeping architecture and implementation boundaries explicit.');
+              }
+              if (summary.private.ci > 0 || summary.public.ci.length) {
+                lines.push('- Automation and documentation workflows benefit from stricter repository and branch assumptions.');
+              }
+              if (hasPrivateActivity()) {
+                lines.push('- Public-facing devlogs are safer and more useful when private implementation details are summarized at a higher level.');
+              }
+              if (!lines.length) {
+                lines.push('- (reflect on key learnings from this week)');
+              }
+
+              return Array.from(new Set(lines)).join('\n');
             }
 
-            const learned = [];
-            if (nonEmpty(buckets.feat)) {
-              learned.push('- Built or extended new features.');
-            }
-            if (nonEmpty(buckets.fix)) {
-              learned.push('- Improved stability by fixing bugs.');
-            }
-            if (nonEmpty(buckets.docs) || nonEmpty(buckets.chore)) {
-              learned.push('- Invested time in documentation and cleanup.');
-            }
-            if (nonEmpty(buckets.ci)) {
-              learned.push('- Improved CI/CD and automation understanding.');
-            }
-            if (nonEmpty(buckets.refactor)) {
-              learned.push('- Practiced refactoring and design improvement.');
-            }
-            if (nonEmpty(buckets.test)) {
-              learned.push('- Added or improved validation through tests.');
-            }
-            if (!learned.length) {
-              learned.push('- (reflect on key learnings from this week)');
-            }
+            const accomplished = buildAccomplished();
+            const inProgress = buildInProgress();
+            const learned = buildLearned();
 
             let warningText = '';
-            if (nonEmpty(warnings)) {
+            if (warnings.length) {
               warningText = [
                 '',
                 '## ⚠️ Notes',
                 ...warnings
+              ].join('\n');
+            } else if (hasPrivateActivity()) {
+              warningText = [
+                '',
+                '## ⚠️ Notes',
+                '- Private repository activity is intentionally summarized at a high level.'
               ].join('\n');
             }
 
@@ -302,13 +519,13 @@ jobs:
               `_Date created:_ ${today}`,
               '',
               '## ✅ What I accomplished',
-              accomplished.trimEnd(),
+              accomplished,
               '',
               '## 🔧 In progress',
-              inProgText,
+              inProgress,
               '',
               '## 🧠 What I learned',
-              learned.join('\n'),
+              learned,
               warningText
             ].join('\n');
 
