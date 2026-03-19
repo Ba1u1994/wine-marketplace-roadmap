@@ -1,735 +1,206 @@
-name: devlog backfill from private repo history v2
+name: DevLog Backfill (V3)
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  backfill:
+  backfill-devlogs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout Roadmap Repo
         uses: actions/checkout@v4
 
-      - name: Ensure changelog directory exists
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p changelog
-
-      - name: Generate changelog files from private repo history
-        id: build
+      - name: Generate DevLogs (V3)
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.DEVLOG_TOKEN }}
           script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            const target = {
-              owner: 'wine-online-store',
-              repo: 'wine-marketplace',
-              includeBranchPatterns: [
-                /^main$/i,
-                /^develop$/i,
-                /^feature\//i,
-                /^bugfix\//i,
-                /^hotfix\//i,
-                /^release\//i
-              ],
-              excludeBranchPatterns: [
-                /^gh-pages$/i,
-                /^dependabot\//i
-              ]
-            };
-
-            function matchesAny(name, patterns) {
-              return patterns.some((p) => p.test(name));
-            }
-
-            function shouldIncludeBranch(branchName) {
-              if (matchesAny(branchName, target.excludeBranchPatterns || [])) {
-                return false;
-              }
-              if (!target.includeBranchPatterns?.length) {
-                return true;
-              }
-              return matchesAny(branchName, target.includeBranchPatterns);
-            }
-
-            function normalizeMessage(msgFull) {
-              return (msgFull || '').split('\n')[0].trim();
-            }
-
-            function startOfWeekUTC(dateObj) {
-              const d = new Date(Date.UTC(
-                dateObj.getUTCFullYear(),
-                dateObj.getUTCMonth(),
-                dateObj.getUTCDate()
-              ));
-              const day = d.getUTCDay(); // 0=Sun, 1=Mon
-              const diff = day === 0 ? -6 : 1 - day;
-              d.setUTCDate(d.getUTCDate() + diff);
-              d.setUTCHours(0, 0, 0, 0);
-              return d;
-            }
-
-            function addDaysUTC(dateObj, days) {
-              const d = new Date(dateObj.getTime());
-              d.setUTCDate(d.getUTCDate() + days);
-              return d;
-            }
-
-            function formatDateUTC(dateObj) {
-              return dateObj.toISOString().slice(0, 10);
-            }
-
-            function monthNameUTC(dateObj) {
-              return dateObj.toLocaleString('en-US', {
-                month: 'long',
-                timeZone: 'UTC'
-              });
-            }
-
-            function getMonthWeekNumber(weekStart) {
-              const year = weekStart.getUTCFullYear();
-              const month = weekStart.getUTCMonth();
-
-              let cursor = new Date(Date.UTC(year, month, 1));
-              cursor = startOfWeekUTC(cursor);
-
-              let week = 1;
-              while (cursor.getTime() < weekStart.getTime()) {
-                cursor = addDaysUTC(cursor, 7);
-                week++;
-              }
-
-              return week;
-            }
-
-            function unique(arr) {
-              return Array.from(new Set(arr));
-            }
-
-            function makeWeekState() {
-              return {
-                commits: [],
-                warnings: [],
-                areaActionCounts: new Map(),
-                areaCounts: new Map(),
-                actionCounts: new Map(),
-                techniqueCounts: new Map(),
-                architectureSignals: new Map(),
-                learningSignals: new Map(),
-                examples: new Map()
-              };
-            }
-
-            function incrementMap(map, key, amount = 1) {
-              map.set(key, (map.get(key) || 0) + amount);
-            }
-
-            function addExample(state, key, value, max = 2) {
-              if (!state.examples.has(key)) {
-                state.examples.set(key, []);
-              }
-              const items = state.examples.get(key);
-              if (items.length < max && !items.includes(value)) {
-                items.push(value);
-              }
-            }
-
-            function sortEntriesDesc(map) {
-              return Array.from(map.entries())
-                .sort((a, b) => {
-                  if (b[1] !== a[1]) return b[1] - a[1];
-                  return a[0].localeCompare(b[0]);
-                });
-            }
-
-            function scoreMatch(text, rules) {
-              let score = 0;
-              for (const r of rules) {
-                if (r.test(text)) score++;
-              }
-              return score;
-            }
-
-            function detectArea(text) {
-              const candidates = [
-                {
-                  area: 'Identity',
-                  rules: [/identity/i, /\bauth\b/i, /authentication/i, /authorization/i, /\bjwt\b/i, /refresh token/i, /session/i, /\blogin\b/i, /\blogout\b/i, /\bregister\b/i, /\buser\b/i, /\brole\b/i, /\bpermission\b/i, /\brbac\b/i, /\btoken\b/i]
-                },
-                {
-                  area: 'Catalog',
-                  rules: [/catalog/i, /\bwine\b/i, /\bwines\b/i, /winery/i, /region/i, /appellation/i, /grape/i, /vintage/i, /producer/i, /wine image/i]
-                },
-                {
-                  area: 'Orders',
-                  rules: [/\border\b/i, /\borders\b/i, /\bcart\b/i, /checkout/i, /basket/i, /line item/i, /purchase/i]
-                },
-                {
-                  area: 'Payments',
-                  rules: [/\bpayment\b/i, /\bpayments\b/i, /billing/i, /invoice/i, /capture/i, /refund/i, /provider/i, /transaction/i]
-                },
-                {
-                  area: 'Delivery',
-                  rules: [/delivery/i, /shipment/i, /shipping/i, /tracking/i, /carrier/i, /fulfillment/i, /dispatch/i]
-                },
-                {
-                  area: 'Frontend Web',
-                  rules: [/frontend/i, /\bweb\b/i, /\breact\b/i, /\bvite\b/i, /typescript/i, /\bpage\b/i, /component/i, /\broute\b/i, /layout/i, /\bhook\b/i, /\bform\b/i, /\bui\b/i]
-                },
-                {
-                  area: 'Admin UI',
-                  rules: [/\badmin\b/i, /dashboard/i, /\bpanel\b/i, /backoffice/i, /management/i]
-                },
-                {
-                  area: 'API',
-                  rules: [/\bapi\b/i, /endpoint/i, /controller/i, /contract/i, /swagger/i, /request/i, /response/i]
-                },
-                {
-                  area: 'Persistence',
-                  rules: [/ef core/i, /dbcontext/i, /migration/i, /\bsql\b/i, /database/i, /repository/i, /persistence/i, /query/i]
-                },
-                {
-                  area: 'API Gateway / Edge',
-                  rules: [/gateway/i, /\bedge\b/i, /proxy/i, /routing/i, /reverse proxy/i, /ocelot/i, /\bbff\b/i]
-                },
-                {
-                  area: 'Shared Building Blocks',
-                  rules: [/\bshared\b/i, /\bcommon\b/i, /building blocks/i, /kernel/i, /abstractions/i, /\bresult\b/i, /base entity/i, /aggregate root/i, /strongly typed id/i, /value object/i]
-                },
-                {
-                  area: 'Infrastructure / DevOps',
-                  rules: [/docker/i, /compose/i, /\binfra\b/i, /infrastructure/i, /environment/i, /config/i, /settings/i, /deployment/i, /workflow/i, /github actions?/i, /pipeline/i, /\bci\b/i, /\bcd\b/i, /logging/i, /monitoring/i, /observability/i]
-                },
-                {
-                  area: 'Documentation / Planning',
-                  rules: [/\bdocs\b/i, /readme/i, /\badr\b/i, /roadmap/i, /\bplan\b/i, /vision/i, /architecture/i, /decision/i, /design/i, /documentation/i]
-                },
-                {
-                  area: 'Testing',
-                  rules: [/\btest\b/i, /\btests\b/i, /spec/i, /coverage/i]
-                }
-              ];
-
-              let best = { area: 'Core backend', score: 0 };
-              for (const c of candidates) {
-                const score = scoreMatch(text, c.rules);
-                if (score > best.score) {
-                  best = { area: c.area, score };
-                }
-              }
-              return best.area;
-            }
-
-            function detectAction(text) {
-              const t = text.toLowerCase();
-
-              if (/^feat(\(.+\))?:/i.test(text)) return 'feature';
-              if (/^fix(\(.+\))?:/i.test(text)) return 'fix';
-              if (/^refactor(\(.+\))?:/i.test(text)) return 'refactor';
-              if (/^docs?(\(.+\))?:/i.test(text)) return 'documentation';
-              if (/^chore(\(.+\))?:/i.test(text)) return 'maintenance';
-              if (/^ci(\(.+\))?:/i.test(text)) return 'automation';
-              if (/^tests?(\(.+\))?:/i.test(text)) return 'testing';
-
-              if (/aggregate|entity|value object|valueobject|aggregate root|business rule|invariant|domain/i.test(t)) {
-                return 'domain-modeling';
-              }
-              if (/handler|use case|application|orchestration|flow|command|query|cqrs|mediatr/i.test(t)) {
-                return 'application-flow';
-              }
-              if (/endpoint|controller|contract|swagger|request|response|api/i.test(t)) {
-                return 'api-contract';
-              }
-              if (/migration|dbcontext|repository|sql|database|persistence|query/i.test(t)) {
-                return 'persistence';
-              }
-              if (/auth|authentication|authorization|jwt|refresh token|role|permission|session|security/i.test(t)) {
-                return 'security';
-              }
-              if (/integration|provider|gateway|external|client|http/i.test(t)) {
-                return 'integration';
-              }
-              if (/page|component|layout|form|ui|frontend|react|typescript|hook/i.test(t)) {
-                return 'ui-implementation';
-              }
-              if (/workflow|pipeline|docker|compose|github actions?|ci|cd|environment|infra/i.test(t)) {
-                return 'automation';
-              }
-              if (/research|spike|investigate|explore|evaluate|compare/i.test(t)) {
-                return 'research';
-              }
-
-              return 'implementation';
-            }
-
-            function detectTechniques(text) {
-              const patterns = [
-                ['Clean Architecture', /clean architecture/i],
-                ['DDD', /\bddd\b/i],
-                ['CQRS', /\bcqrs\b/i],
-                ['MediatR', /mediatr/i],
-                ['EF Core', /ef core|dbcontext|migration/i],
-                ['JWT', /\bjwt\b/i],
-                ['Refresh Tokens', /refresh token/i],
-                ['Role-based Authorization', /authorization|rbac|role|permission/i],
-                ['Repository Pattern', /repository/i],
-                ['Domain Modeling', /aggregate|entity|value object|valueobject|aggregate root|domain/i],
-                ['API Contracts', /contract|endpoint|swagger|controller|request|response/i],
-                ['Docker', /docker|compose/i],
-                ['GitHub Actions', /github actions?|workflow/i],
-                ['React', /\breact\b/i],
-                ['TypeScript', /typescript/i],
-                ['SQL', /\bsql\b|database/i],
-                ['Validation', /validation|validator/i],
-                ['Testing', /test|spec|coverage/i],
-                ['Strongly Typed IDs', /strongly typed id/i],
-                ['Result Pattern', /\bresult\b/i],
-                ['Domain Events', /domain event/i],
-                ['Outbox Pattern', /\boutbox\b/i],
-                ['User Secrets', /user secrets?/i],
-                ['Gateway Routing', /gateway|ocelot|proxy|routing/i],
-                ['Logging / Observability', /logging|monitoring|observability/i],
-                ['Error Handling', /error handling|exception|problem details|problemdetails/i]
-              ];
-
-              return patterns
-                .filter(([_, regex]) => regex.test(text))
-                .map(([name]) => name);
-            }
-
-            function detectArchitectureSignals(text) {
-              const signals = [];
-
-              if (/aggregate|entity|value object|valueobject|invariant|domain/i.test(text)) {
-                signals.push('Domain boundaries and business concepts were clarified through model-level work.');
-              }
-              if (/clean architecture|boundary|layer|architecture/i.test(text)) {
-                signals.push('Layering and architectural boundaries were actively refined.');
-              }
-              if (/cqrs|mediatr|command|query|handler/i.test(text)) {
-                signals.push('The work reflected explicit separation between request handling and business behavior.');
-              }
-              if (/repository|persistence|dbcontext|migration|sql|database/i.test(text)) {
-                signals.push('Persistence structure and data-access decisions were part of the architectural direction.');
-              }
-              if (/contract|endpoint|api|swagger|request|response/i.test(text)) {
-                signals.push('Service contracts and API surface design were part of the week’s architectural progress.');
-              }
-              if (/auth|authorization|jwt|refresh token|role|permission|session|security/i.test(text)) {
-                signals.push('Security boundaries and access-control behavior were shaped more deliberately.');
-              }
-              if (/docker|workflow|pipeline|github actions?|environment|infra/i.test(text)) {
-                signals.push('Delivery workflow and environment consistency were improved through tooling decisions.');
-              }
-
-              return signals;
-            }
-
-            function detectLearningSignals(text, area, action) {
-              const signals = [];
-
-              if (area === 'Catalog' || action === 'domain-modeling') {
-                signals.push('Domain-oriented work reinforced the importance of modeling business concepts explicitly instead of leaking infrastructure concerns inward.');
-              }
-              if (area === 'Identity' || action === 'security') {
-                signals.push('Security-related work highlighted the need to design authentication and authorization concerns deliberately rather than treating them as thin plumbing.');
-              }
-              if (action === 'api-contract' || area === 'API') {
-                signals.push('API-related work emphasized the value of stable contracts and clearer service boundaries.');
-              }
-              if (action === 'persistence' || area === 'Persistence') {
-                signals.push('Persistence work reinforced the importance of keeping data-access concerns aligned with application and domain boundaries.');
-              }
-              if (action === 'automation' || area === 'Infrastructure / DevOps') {
-                signals.push('Tooling and automation work showed how much delivery quality depends on repeatable workflows and consistent environments.');
-              }
-              if (action === 'testing' || area === 'Testing') {
-                signals.push('Test-related work reinforced the value of validating behavior early instead of relying only on manual verification.');
-              }
-              if (action === 'refactor') {
-                signals.push('Refactoring work highlighted the value of keeping responsibilities and boundaries explicit as the codebase evolves.');
-              }
-              if (area === 'Frontend Web' || area === 'Admin UI') {
-                signals.push('UI-related work reinforced the importance of keeping presentation concerns separate from transport and domain behavior.');
-              }
-              if (area === 'Shared Building Blocks') {
-                signals.push('Shared abstractions proved most useful when they stayed minimal and avoided leaking domain responsibilities across boundaries.');
-              }
-
-              return signals;
-            }
-
-            function summarizeCommit(msg, branch) {
-              const combined = `${branch} ${msg}`;
-              const area = detectArea(combined);
-              const action = detectAction(msg);
-              const techniques = detectTechniques(combined);
-              const architectureSignals = detectArchitectureSignals(combined);
-              const learningSignals = detectLearningSignals(combined, area, action);
-
-              return {
-                area,
-                action,
-                techniques,
-                architectureSignals,
-                learningSignals,
-                raw: msg,
-                branch
-              };
-            }
-
-            function addCommitToWeek(state, analyzed) {
-              state.commits.push(analyzed);
-
-              incrementMap(state.areaCounts, analyzed.area);
-              incrementMap(state.actionCounts, analyzed.action);
-              incrementMap(state.areaActionCounts, `${analyzed.area}__${analyzed.action}`);
-
-              addExample(state, `${analyzed.area}__${analyzed.action}`, analyzed.raw, 2);
-
-              for (const tech of analyzed.techniques) {
-                incrementMap(state.techniqueCounts, tech);
-              }
-              for (const signal of analyzed.architectureSignals) {
-                incrementMap(state.architectureSignals, signal);
-              }
-              for (const learning of analyzed.learningSignals) {
-                incrementMap(state.learningSignals, learning);
-              }
-            }
-
-            function actionPhrase(action, area) {
-              const map = {
-                'feature': `Implemented new functionality in ${area}.`,
-                'fix': `Resolved defects and stabilized behavior in ${area}.`,
-                'refactor': `Refined internal structure and maintainability in ${area}.`,
-                'documentation': `Expanded documentation and design notes related to ${area}.`,
-                'maintenance': `Completed support and maintenance work around ${area}.`,
-                'automation': `Improved tooling, environment setup, or automation around ${area}.`,
-                'testing': `Added or improved automated verification around ${area}.`,
-                'domain-modeling': `Advanced domain modeling decisions in ${area}.`,
-                'application-flow': `Refined application flow and use-case orchestration in ${area}.`,
-                'api-contract': `Clarified API contracts and request/response behavior in ${area}.`,
-                'persistence': `Improved persistence and data-access structure in ${area}.`,
-                'security': `Strengthened security-related behavior and access control in ${area}.`,
-                'integration': `Progressed integration-related work in ${area}.`,
-                'ui-implementation': `Advanced user-interface implementation in ${area}.`,
-                'research': `Investigated technical direction and implementation options for ${area}.`,
-                'implementation': `Continued implementation work in ${area}.`
-              };
-              return map[action] || `Continued implementation work in ${area}.`;
-            }
-
-            function formatListInline(items) {
-              if (!items.length) return '';
-              if (items.length === 1) return items[0];
-              if (items.length === 2) return `${items[0]} and ${items[1]}`;
-              return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
-            }
-
-            function buildTechniqueSentence(state) {
-              const topTechniques = sortEntriesDesc(state.techniqueCounts)
-                .slice(0, 5)
-                .map(([name]) => name);
-
-              if (!topTechniques.length) return null;
-
-              return `This week’s work relied on techniques and tools such as ${formatListInline(topTechniques)}.`;
-            }
-
-            function buildArchitectureSentences(state) {
-              return sortEntriesDesc(state.architectureSignals)
-                .slice(0, 2)
-                .map(([signal]) => signal);
-            }
-
-            function buildAccomplished(state) {
-              if (!state.commits.length) {
-                return '- (no commits found in this period)';
-              }
-
-              const lines = [];
-
-              const dominantPairs = sortEntriesDesc(state.areaActionCounts)
-                .slice(0, 6)
-                .map(([key]) => {
-                  const [area, action] = key.split('__');
-                  return { area, action };
-                });
-
-              for (const pair of dominantPairs) {
-                lines.push(`- ${actionPhrase(pair.action, pair.area)}`);
-              }
-
-              for (const arch of buildArchitectureSentences(state)) {
-                lines.push(`- ${arch}`);
-              }
-
-              const techniqueSentence = buildTechniqueSentence(state);
-              if (techniqueSentence) {
-                lines.push(`- ${techniqueSentence}`);
-              }
-
-              return unique(lines).join('\n');
-            }
-
-            function buildLearned(state) {
-              if (!state.commits.length) {
-                return '- (reflect on key learnings from this week)';
-              }
-
-              const topLearned = sortEntriesDesc(state.learningSignals)
-                .slice(0, 4)
-                .map(([signal]) => signal);
-
-              if (topLearned.length) {
-                return topLearned.map(x => `- ${x}`).join('\n');
-              }
-
-              const fallback = [];
-              if (state.commits.length > 0) {
-                fallback.push('- Progress this week confirmed that clearer commit intent produces a much more useful technical history.');
-              }
-
-              const topAreas = sortEntriesDesc(state.areaCounts).slice(0, 2).map(([a]) => a);
-              if (topAreas.length) {
-                fallback.push(`- The week’s work concentrated mainly on ${formatListInline(topAreas)}, which made architectural direction easier to infer from repository history.`);
-              }
-
-              return unique(fallback).join('\n');
-            }
-
-            function inferNextWeekProgress(nextState) {
-              if (!nextState || !nextState.commits.length) {
-                return '- (no clear follow-up activity inferred from the next week)';
-              }
-
-              const dominantPairs = sortEntriesDesc(nextState.areaActionCounts)
-                .slice(0, 3)
-                .map(([key]) => {
-                  const [area, action] = key.split('__');
-                  return { area, action };
-                });
-
-              if (!dominantPairs.length) {
-                return '- Continued work is expected to evolve from the current week’s implementation direction.';
-              }
-
-              const lines = dominantPairs.map(pair => {
-                switch (pair.action) {
-                  case 'domain-modeling':
-                    return `- Ongoing work appears to continue in ${pair.area}, especially around domain modeling and business-rule structure.`;
-                  case 'application-flow':
-                    return `- Ongoing work appears to continue in ${pair.area}, with further refinement of use-case flow and orchestration.`;
-                  case 'api-contract':
-                    return `- Ongoing work appears to continue in ${pair.area}, with additional API and contract refinement.`;
-                  case 'persistence':
-                    return `- Ongoing work appears to continue in ${pair.area}, particularly in persistence and data-access design.`;
-                  case 'security':
-                    return `- Ongoing work appears to continue in ${pair.area}, with further security and access-control refinement.`;
-                  case 'integration':
-                    return `- Ongoing work appears to continue in ${pair.area}, especially around external integration boundaries and request flow.`;
-                  case 'ui-implementation':
-                    return `- Ongoing work appears to continue in ${pair.area}, with further UI implementation and interaction refinement.`;
-                  case 'refactor':
-                    return `- Ongoing work appears to continue in ${pair.area}, with further refactoring and structural cleanup.`;
-                  case 'testing':
-                    return `- Ongoing work appears to continue in ${pair.area}, with stronger emphasis on validation and automated verification.`;
-                  case 'automation':
-                    return `- Ongoing work appears to continue in ${pair.area}, especially around automation and workflow hardening.`;
-                  case 'documentation':
-                    return `- Ongoing work appears to continue in ${pair.area}, with additional documentation and design clarification.`;
-                  case 'research':
-                    return `- Ongoing work appears to continue in ${pair.area}, with further technical exploration before implementation is finalized.`;
-                  default:
-                    return `- Ongoing work appears to continue in ${pair.area}, building on the current implementation direction.`;
-                }
-              });
-
-              return unique(lines).join('\n');
-            }
-
-            function buildNotes(state) {
-              if (!state.commits.length) return '';
-              return [
-                '## ⚠️ Notes',
-                '- This entry is reconstructed from repository history and commit messages.',
-                '- Architectural details and lessons are inferred heuristically from commit intent rather than manual weekly journaling.'
-              ].join('\n');
-            }
-
-            function buildMarkdown(state, nextState, weekStart, createdDate) {
-              const year = weekStart.getUTCFullYear();
-              const month = String(weekStart.getUTCMonth() + 1).padStart(2, '0');
-              const monthName = monthNameUTC(weekStart);
-              const weekNumber = getMonthWeekNumber(weekStart);
-              const notes = buildNotes(state);
-
-              return {
-                filename: `${year}-${month}-week-${String(weekNumber).padStart(2, '0')}.md`,
-                content: [
-                  `# Week ${weekNumber} – ${monthName} ${year}`,
-                  '',
-                  `_Date created:_ ${createdDate}`,
-                  '',
-                  '## ✅ What I accomplished',
-                  buildAccomplished(state),
-                  '',
-                  '## 🔧 In progress',
-                  inferNextWeekProgress(nextState),
-                  '',
-                  '## 🧠 What I learned',
-                  buildLearned(state),
-                  notes ? `\n${notes}` : ''
-                ].join('\n').trimEnd() + '\n'
-              };
-            }
-
-            core.info(`Loading repository metadata for ${target.owner}/${target.repo}`);
-
-            const repoResponse = await github.rest.repos.get({
-              owner: target.owner,
-              repo: target.repo
-            });
-
-            const repoCreatedAt = new Date(repoResponse.data.created_at);
-            const now = new Date();
-            const since = repoCreatedAt.toISOString();
-
-            core.info(`Repository created at: ${repoResponse.data.created_at}`);
-
-            const branches = await github.paginate(
-              github.rest.repos.listBranches,
+            const owner = 'wine-online-store';
+            const repo = 'wine-marketplace';
+
+            const commits = await github.paginate(
+              github.rest.repos.listCommits,
               {
-                owner: target.owner,
-                repo: target.repo,
-                per_page: 100
+                owner,
+                repo,
+                per_page: 100,
               }
             );
 
-            const includedBranches = branches
-              .map(b => b.name)
-              .filter(name => shouldIncludeBranch(name));
-
-            core.info(`Included branches: ${includedBranches.join(', ') || '(none)'}`);
-
-            if (!includedBranches.length) {
-              throw new Error('No matching branches found to process.');
+            function getWeekKey(date) {
+              const d = new Date(date);
+              const year = d.getFullYear();
+              const firstDay = new Date(year, 0, 1);
+              const pastDays = Math.floor((d - firstDay) / 86400000);
+              const week = Math.ceil((pastDays + firstDay.getDay() + 1) / 7);
+              const month = String(d.getMonth() + 1).padStart(2, '0');
+              return `${year}-${month}-week-${String(week).padStart(2, '0')}`;
             }
 
-            const weeks = new Map();
-            const seenShas = new Set();
+            function detectArea(msg) {
+              const m = msg.toLowerCase();
 
-            for (const branchName of includedBranches) {
-              try {
-                core.info(`Reading commits from branch ${branchName}`);
+              if (m.match(/identity|auth|jwt|token|session|user|role/)) return 'Identity Service';
+              if (m.match(/catalog|wine|winery|region|grape/)) return 'Catalog Service';
+              if (m.match(/order|cart|checkout/)) return 'Orders Service';
+              if (m.match(/payment|transaction|provider/)) return 'Payments Service';
+              if (m.match(/delivery|shipment|tracking/)) return 'Delivery Service';
+              if (m.match(/react|frontend|ui|page|component/)) return 'Web Frontend';
+              if (m.match(/admin|dashboard|management/)) return 'Admin Frontend';
+              if (m.match(/gateway|ocelot|proxy/)) return 'API Gateway';
+              if (m.match(/valueobject|aggregate|shared|result|stronglytyped/)) return 'Shared Building Blocks';
+              if (m.match(/docker|ci|cd|pipeline|workflow|env|deploy/)) return 'Infrastructure / DevOps';
+              if (m.match(/doc|readme|adr|architecture|roadmap/)) return 'Architecture / Documentation';
 
-                const commits = await github.paginate(
-                  github.rest.repos.listCommits,
-                  {
-                    owner: target.owner,
-                    repo: target.repo,
-                    sha: branchName,
-                    since,
-                    per_page: 100
-                  }
+              return 'Backend Service';
+            }
+
+            function detectSubArea(msg) {
+              const m = msg.toLowerCase();
+
+              if (m.match(/refresh token|session|token/)) return 'Token / Session Management';
+              if (m.match(/role|permission|rbac/)) return 'Authorization';
+              if (m.match(/wine image|image|sort/)) return 'Catalog Media';
+              if (m.match(/repository|migration|db|context/)) return 'Persistence';
+              if (m.match(/api|endpoint|contract/)) return 'API Contracts';
+              if (m.match(/docker|compose/)) return 'Environment Setup';
+              if (m.match(/test|validation/)) return 'Testing / Validation';
+              if (m.match(/value object|aggregate|entity/)) return 'Domain Modeling';
+
+              return 'General';
+            }
+
+            function detectAction(msg) {
+              const m = msg.toLowerCase();
+
+              if (m.startsWith('feat')) return 'Application Flow';
+              if (m.startsWith('fix')) return 'Refactoring';
+              if (m.startsWith('refactor')) return 'Refactoring';
+              if (m.startsWith('docs')) return 'Documentation';
+              if (m.startsWith('test')) return 'Testing';
+              if (m.startsWith('ci')) return 'Automation';
+
+              if (m.match(/security|auth|token/)) return 'Security';
+              if (m.match(/repository|db|migration/)) return 'Persistence';
+              if (m.match(/api|endpoint/)) return 'API Contract';
+              if (m.match(/model|entity|aggregate/)) return 'Domain Modeling';
+
+              return 'Application Flow';
+            }
+
+            function buildAccomplished(items) {
+              const lines = [];
+
+              items.forEach(([key]) => {
+                const [area, sub, action] = key.split('__');
+
+                lines.push(
+                  `${action} improvements in ${area} around ${sub.toLowerCase()}.`
                 );
+              });
 
-                core.info(`Found ${commits.length} commits in branch ${branchName}`);
+              lines.push(
+                'This week’s work reflects ongoing refinement of service boundaries, persistence concerns, and API behavior.'
+              );
 
-                for (const c of commits) {
-                  const sha = c.sha;
-                  if (!sha || seenShas.has(sha)) continue;
+              return lines.slice(0, 5);
+            }
 
-                  seenShas.add(sha);
+            function buildLearned(items) {
+              const lessons = [];
 
-                  const msg = normalizeMessage(c.commit?.message || '');
-                  const commitDateRaw = c.commit?.author?.date || c.commit?.committer?.date;
-                  if (!msg || !commitDateRaw) continue;
+              const keys = items.map(i => i[0].toLowerCase()).join(' ');
 
-                  const commitDate = new Date(commitDateRaw);
-                  const weekStart = startOfWeekUTC(commitDate);
-                  const weekKey = formatDateUTC(weekStart);
-
-                  if (!weeks.has(weekKey)) {
-                    weeks.set(weekKey, makeWeekState());
-                  }
-
-                  const analyzed = summarizeCommit(msg, branchName);
-                  addCommitToWeek(weeks.get(weekKey), analyzed);
-                }
-              } catch (error) {
-                const message = error?.message || 'Unknown branch read error';
-                core.warning(`Failed to read branch ${branchName}: ${message}`);
+              if (keys.includes('identity') && keys.includes('persistence')) {
+                lessons.push('Identity-related work highlighted the importance of keeping token and session logic outside core domain models.');
               }
+
+              if (keys.includes('catalog') && keys.includes('api')) {
+                lessons.push('Catalog work reinforced that strong domain modeling simplifies API contract design.');
+              }
+
+              if (keys.includes('shared') || keys.includes('value')) {
+                lessons.push('Shared building blocks must remain minimal and avoid leaking domain-specific logic.');
+              }
+
+              if (lessons.length === 0) {
+                lessons.push('This week reinforced the importance of aligning architecture decisions with long-term maintainability.');
+              }
+
+              return lessons.slice(0, 3);
             }
 
-            const backfillStart = startOfWeekUTC(repoCreatedAt);
-            const backfillEnd = startOfWeekUTC(now);
+            function inferNextProgress(currentKey, weeks) {
+              const keys = Object.keys(weeks).sort();
+              const idx = keys.indexOf(currentKey);
 
-            const orderedWeekStarts = [];
-            for (
-              let cursor = new Date(backfillStart.getTime());
-              cursor <= backfillEnd;
-              cursor = addDaysUTC(cursor, 7)
-            ) {
-              orderedWeekStarts.push(new Date(cursor.getTime()));
+              if (idx === -1 || idx === keys.length - 1) return [];
+
+              const next = weeks[keys[idx + 1]];
+              const areas = new Set();
+
+              next.forEach(([k]) => {
+                const [area] = k.split('__');
+                areas.add(area);
+              });
+
+              return Array.from(areas).slice(0, 2).map(a =>
+                `Ongoing work appears to continue in ${a}.`
+              );
             }
 
-            let createdCount = 0;
+            const weeks = {};
 
-            for (let i = 0; i < orderedWeekStarts.length; i++) {
-              const weekStart = orderedWeekStarts[i];
-              const weekKey = formatDateUTC(weekStart);
+            for (const commit of commits) {
+              const date = commit.commit.author.date;
+              const msg = commit.commit.message;
 
-              const nextWeekStart = orderedWeekStarts[i + 1];
-              const nextWeekKey = nextWeekStart ? formatDateUTC(nextWeekStart) : null;
+              const weekKey = getWeekKey(date);
+              const area = detectArea(msg);
+              const sub = detectSubArea(msg);
+              const action = detectAction(msg);
 
-              const state = weeks.get(weekKey) || makeWeekState();
-              const nextState = nextWeekKey ? (weeks.get(nextWeekKey) || makeWeekState()) : null;
+              const key = `${area}__${sub}__${action}`;
 
-              const markdown = buildMarkdown(state, nextState, weekStart, formatDateUTC(now));
-              const outputPath = path.join('changelog', markdown.filename);
+              if (!weeks[weekKey]) weeks[weekKey] = {};
+              if (!weeks[weekKey][key]) weeks[weekKey][key] = 0;
 
-              fs.writeFileSync(outputPath, markdown.content, 'utf8');
-              createdCount += 1;
-              core.info(`Wrote ${outputPath}`);
+              weeks[weekKey][key]++;
             }
 
-            core.setOutput('created_count', String(createdCount));
-            core.setOutput('week_count', String(createdCount));
-            core.setOutput('branch_count', String(includedBranches.length));
-            core.setOutput('commit_count', String(seenShas.size));
+            const fs = require('fs');
 
-      - name: Commit and push generated changelogs
-        shell: bash
+            for (const [weekKey, data] of Object.entries(weeks)) {
+
+              const sorted = Object.entries(data)
+                .sort((a, b) => b[1] - a[1]);
+
+              const accomplished = buildAccomplished(sorted);
+              const learned = buildLearned(sorted);
+              const progress = inferNextProgress(weekKey, weeks);
+
+              const content = `
+# ${weekKey}
+
+_Date created: ${new Date().toISOString().split('T')[0]}_
+
+## ✅ What I accomplished
+${accomplished.map(l => `- ${l}`).join('\n')}
+
+## 🔧 In progress
+${progress.map(l => `- ${l}`).join('\n')}
+
+## 🧠 What I learned
+${learned.map(l => `- ${l}`).join('\n')}
+`;
+
+              fs.writeFileSync(`${weekKey}.md`, content.trim());
+            }
+
+      - name: Commit results
         run: |
-          set -euo pipefail
-
-          git config user.name "ba1u-bot"
-          git config user.email "actions@users.noreply.github.com"
-
-          git add changelog/
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-            exit 0
-          fi
-
-          git commit -m "chore(devlog): rebuild changelog from private repo history v2"
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add .
+          git commit -m "chore(devlog): regenerate changelogs (V3)"
           git push
-
-      - name: Print summary
-        shell: bash
-        run: |
-          echo "Weeks generated: ${{ steps.build.outputs.week_count }}"
-          echo "Branches scanned: ${{ steps.build.outputs.branch_count }}"
-          echo "Unique commits scanned: ${{ steps.build.outputs.commit_count }}"
