@@ -1,4 +1,4 @@
-name: devlog backfill from private repo history
+name: devlog backfill from private repo history v2
 
 on:
   workflow_dispatch:
@@ -20,7 +20,7 @@ jobs:
           set -euo pipefail
           mkdir -p changelog
 
-      - name: Generate changelog files from full private history
+      - name: Generate changelog files from private repo history
         id: build
         uses: actions/github-script@v7
         with:
@@ -114,6 +114,42 @@ jobs:
               return Array.from(new Set(arr));
             }
 
+            function makeWeekState() {
+              return {
+                commits: [],
+                warnings: [],
+                areaActionCounts: new Map(),
+                areaCounts: new Map(),
+                actionCounts: new Map(),
+                techniqueCounts: new Map(),
+                architectureSignals: new Map(),
+                learningSignals: new Map(),
+                examples: new Map()
+              };
+            }
+
+            function incrementMap(map, key, amount = 1) {
+              map.set(key, (map.get(key) || 0) + amount);
+            }
+
+            function addExample(state, key, value, max = 2) {
+              if (!state.examples.has(key)) {
+                state.examples.set(key, []);
+              }
+              const items = state.examples.get(key);
+              if (items.length < max && !items.includes(value)) {
+                items.push(value);
+              }
+            }
+
+            function sortEntriesDesc(map) {
+              return Array.from(map.entries())
+                .sort((a, b) => {
+                  if (b[1] !== a[1]) return b[1] - a[1];
+                  return a[0].localeCompare(b[0]);
+                });
+            }
+
             function scoreMatch(text, rules) {
               let score = 0;
               for (const r of rules) {
@@ -126,55 +162,59 @@ jobs:
               const candidates = [
                 {
                   area: 'Identity',
-                  rules: [/identity/i, /auth/i, /authentication/i, /authorization/i, /jwt/i, /refresh token/i, /session/i, /user/i, /role/i, /permission/i]
+                  rules: [/identity/i, /\bauth\b/i, /authentication/i, /authorization/i, /\bjwt\b/i, /refresh token/i, /session/i, /\blogin\b/i, /\blogout\b/i, /\bregister\b/i, /\buser\b/i, /\brole\b/i, /\bpermission\b/i, /\brbac\b/i, /\btoken\b/i]
                 },
                 {
                   area: 'Catalog',
-                  rules: [/catalog/i, /wine/i, /winery/i, /region/i, /appellation/i, /grape/i, /vintage/i]
+                  rules: [/catalog/i, /\bwine\b/i, /\bwines\b/i, /winery/i, /region/i, /appellation/i, /grape/i, /vintage/i, /producer/i, /wine image/i]
                 },
                 {
                   area: 'Orders',
-                  rules: [/order/i, /cart/i, /checkout/i]
+                  rules: [/\border\b/i, /\borders\b/i, /\bcart\b/i, /checkout/i, /basket/i, /line item/i, /purchase/i]
                 },
                 {
                   area: 'Payments',
-                  rules: [/payment/i, /transaction/i, /billing/i]
+                  rules: [/\bpayment\b/i, /\bpayments\b/i, /billing/i, /invoice/i, /capture/i, /refund/i, /provider/i, /transaction/i]
                 },
                 {
                   area: 'Delivery',
-                  rules: [/delivery/i, /shipment/i, /shipping/i, /tracking/i]
+                  rules: [/delivery/i, /shipment/i, /shipping/i, /tracking/i, /carrier/i, /fulfillment/i, /dispatch/i]
                 },
                 {
-                  area: 'Frontend',
-                  rules: [/frontend/i, /react/i, /vite/i, /typescript/i, /page/i, /component/i, /ui/i]
+                  area: 'Frontend Web',
+                  rules: [/frontend/i, /\bweb\b/i, /\breact\b/i, /\bvite\b/i, /typescript/i, /\bpage\b/i, /component/i, /\broute\b/i, /layout/i, /\bhook\b/i, /\bform\b/i, /\bui\b/i]
                 },
                 {
                   area: 'Admin UI',
-                  rules: [/admin/i, /dashboard/i, /panel/i]
+                  rules: [/\badmin\b/i, /dashboard/i, /\bpanel\b/i, /backoffice/i, /management/i]
                 },
                 {
                   area: 'API',
-                  rules: [/api/i, /endpoint/i, /controller/i, /contract/i, /swagger/i]
+                  rules: [/\bapi\b/i, /endpoint/i, /controller/i, /contract/i, /swagger/i, /request/i, /response/i]
                 },
                 {
                   area: 'Persistence',
-                  rules: [/ef core/i, /dbcontext/i, /migration/i, /sql/i, /database/i, /repository/i, /persistence/i]
+                  rules: [/ef core/i, /dbcontext/i, /migration/i, /\bsql\b/i, /database/i, /repository/i, /persistence/i, /query/i]
                 },
                 {
-                  area: 'Infrastructure',
-                  rules: [/docker/i, /compose/i, /infra/i, /infrastructure/i, /configuration/i, /settings/i]
+                  area: 'API Gateway / Edge',
+                  rules: [/gateway/i, /\bedge\b/i, /proxy/i, /routing/i, /reverse proxy/i, /ocelot/i, /\bbff\b/i]
                 },
                 {
-                  area: 'CI/CD',
-                  rules: [/github action/i, /workflow/i, /pipeline/i, /\bci\b/i, /\bcd\b/i]
+                  area: 'Shared Building Blocks',
+                  rules: [/\bshared\b/i, /\bcommon\b/i, /building blocks/i, /kernel/i, /abstractions/i, /\bresult\b/i, /base entity/i, /aggregate root/i, /strongly typed id/i, /value object/i]
                 },
                 {
-                  area: 'Documentation',
-                  rules: [/docs/i, /readme/i, /adr/i, /roadmap/i, /architecture/i, /documentation/i]
+                  area: 'Infrastructure / DevOps',
+                  rules: [/docker/i, /compose/i, /\binfra\b/i, /infrastructure/i, /environment/i, /config/i, /settings/i, /deployment/i, /workflow/i, /github actions?/i, /pipeline/i, /\bci\b/i, /\bcd\b/i, /logging/i, /monitoring/i, /observability/i]
+                },
+                {
+                  area: 'Documentation / Planning',
+                  rules: [/\bdocs\b/i, /readme/i, /\badr\b/i, /roadmap/i, /\bplan\b/i, /vision/i, /architecture/i, /decision/i, /design/i, /documentation/i]
                 },
                 {
                   area: 'Testing',
-                  rules: [/test/i, /tests/i, /spec/i, /coverage/i]
+                  rules: [/\btest\b/i, /\btests\b/i, /spec/i, /coverage/i]
                 }
               ];
 
@@ -189,22 +229,44 @@ jobs:
             }
 
             function detectAction(text) {
-              const lower = text.toLowerCase();
+              const t = text.toLowerCase();
 
               if (/^feat(\(.+\))?:/i.test(text)) return 'feature';
               if (/^fix(\(.+\))?:/i.test(text)) return 'fix';
               if (/^refactor(\(.+\))?:/i.test(text)) return 'refactor';
-              if (/^docs?(\(.+\))?:/i.test(text)) return 'docs';
-              if (/^chore(\(.+\))?:/i.test(text)) return 'chore';
-              if (/^ci(\(.+\))?:/i.test(text)) return 'ci';
-              if (/^tests?(\(.+\))?:/i.test(text)) return 'test';
+              if (/^docs?(\(.+\))?:/i.test(text)) return 'documentation';
+              if (/^chore(\(.+\))?:/i.test(text)) return 'maintenance';
+              if (/^ci(\(.+\))?:/i.test(text)) return 'automation';
+              if (/^tests?(\(.+\))?:/i.test(text)) return 'testing';
 
-              if (/aggregate|entity|valueobject|value-object|domain/i.test(lower)) return 'domain-modeling';
-              if (/endpoint|controller|contract|swagger|api/i.test(lower)) return 'api-design';
-              if (/migration|dbcontext|repository|sql|database|persistence/i.test(lower)) return 'persistence';
-              if (/docker|workflow|pipeline|github actions?|ci/i.test(lower)) return 'automation';
-              if (/research|spike|investigate|explore/i.test(lower)) return 'research';
-              if (/learn|lesson/i.test(lower)) return 'learning';
+              if (/aggregate|entity|value object|valueobject|aggregate root|business rule|invariant|domain/i.test(t)) {
+                return 'domain-modeling';
+              }
+              if (/handler|use case|application|orchestration|flow|command|query|cqrs|mediatr/i.test(t)) {
+                return 'application-flow';
+              }
+              if (/endpoint|controller|contract|swagger|request|response|api/i.test(t)) {
+                return 'api-contract';
+              }
+              if (/migration|dbcontext|repository|sql|database|persistence|query/i.test(t)) {
+                return 'persistence';
+              }
+              if (/auth|authentication|authorization|jwt|refresh token|role|permission|session|security/i.test(t)) {
+                return 'security';
+              }
+              if (/integration|provider|gateway|external|client|http/i.test(t)) {
+                return 'integration';
+              }
+              if (/page|component|layout|form|ui|frontend|react|typescript|hook/i.test(t)) {
+                return 'ui-implementation';
+              }
+              if (/workflow|pipeline|docker|compose|github actions?|ci|cd|environment|infra/i.test(t)) {
+                return 'automation';
+              }
+              if (/research|spike|investigate|explore|evaluate|compare/i.test(t)) {
+                return 'research';
+              }
+
               return 'implementation';
             }
 
@@ -217,17 +279,25 @@ jobs:
                 ['EF Core', /ef core|dbcontext|migration/i],
                 ['JWT', /\bjwt\b/i],
                 ['Refresh Tokens', /refresh token/i],
-                ['Role-based Authorization', /role|permission|authorization/i],
+                ['Role-based Authorization', /authorization|rbac|role|permission/i],
                 ['Repository Pattern', /repository/i],
-                ['Domain Modeling', /aggregate|entity|valueobject|value-object|domain/i],
-                ['API Contracts', /contract|endpoint|swagger|controller/i],
+                ['Domain Modeling', /aggregate|entity|value object|valueobject|aggregate root|domain/i],
+                ['API Contracts', /contract|endpoint|swagger|controller|request|response/i],
                 ['Docker', /docker|compose/i],
                 ['GitHub Actions', /github actions?|workflow/i],
                 ['React', /\breact\b/i],
                 ['TypeScript', /typescript/i],
                 ['SQL', /\bsql\b|database/i],
                 ['Validation', /validation|validator/i],
-                ['Testing', /test|spec|coverage/i]
+                ['Testing', /test|spec|coverage/i],
+                ['Strongly Typed IDs', /strongly typed id/i],
+                ['Result Pattern', /\bresult\b/i],
+                ['Domain Events', /domain event/i],
+                ['Outbox Pattern', /\boutbox\b/i],
+                ['User Secrets', /user secrets?/i],
+                ['Gateway Routing', /gateway|ocelot|proxy|routing/i],
+                ['Logging / Observability', /logging|monitoring|observability/i],
+                ['Error Handling', /error handling|exception|problem details|problemdetails/i]
               ];
 
               return patterns
@@ -235,116 +305,150 @@ jobs:
                 .map(([name]) => name);
             }
 
-            function detectLearningSignals(text) {
+            function detectArchitectureSignals(text) {
               const signals = [];
 
-              if (/refactor|cleanup|restructure/i.test(text)) {
-                signals.push('Refactoring work highlighted the value of keeping boundaries and responsibilities explicit.');
+              if (/aggregate|entity|value object|valueobject|invariant|domain/i.test(text)) {
+                signals.push('Domain boundaries and business concepts were clarified through model-level work.');
               }
-              if (/aggregate|entity|valueobject|domain|catalog|identity|orders/i.test(text)) {
+              if (/clean architecture|boundary|layer|architecture/i.test(text)) {
+                signals.push('Layering and architectural boundaries were actively refined.');
+              }
+              if (/cqrs|mediatr|command|query|handler/i.test(text)) {
+                signals.push('The work reflected explicit separation between request handling and business behavior.');
+              }
+              if (/repository|persistence|dbcontext|migration|sql|database/i.test(text)) {
+                signals.push('Persistence structure and data-access decisions were part of the architectural direction.');
+              }
+              if (/contract|endpoint|api|swagger|request|response/i.test(text)) {
+                signals.push('Service contracts and API surface design were part of the week’s architectural progress.');
+              }
+              if (/auth|authorization|jwt|refresh token|role|permission|session|security/i.test(text)) {
+                signals.push('Security boundaries and access-control behavior were shaped more deliberately.');
+              }
+              if (/docker|workflow|pipeline|github actions?|environment|infra/i.test(text)) {
+                signals.push('Delivery workflow and environment consistency were improved through tooling decisions.');
+              }
+
+              return signals;
+            }
+
+            function detectLearningSignals(text, area, action) {
+              const signals = [];
+
+              if (area === 'Catalog' || action === 'domain-modeling') {
                 signals.push('Domain-oriented work reinforced the importance of modeling business concepts explicitly instead of leaking infrastructure concerns inward.');
               }
-              if (/endpoint|contract|controller|api|swagger/i.test(text)) {
-                signals.push('API-related work emphasized the need for stable contracts and clearer service boundaries.');
+              if (area === 'Identity' || action === 'security') {
+                signals.push('Security-related work highlighted the need to design authentication and authorization concerns deliberately rather than treating them as thin plumbing.');
               }
-              if (/migration|dbcontext|repository|database|sql|persistence|ef core/i.test(text)) {
-                signals.push('Persistence work reinforced the importance of keeping data access aligned with application and domain boundaries.');
+              if (action === 'api-contract' || area === 'API') {
+                signals.push('API-related work emphasized the value of stable contracts and clearer service boundaries.');
               }
-              if (/workflow|pipeline|github actions?|ci|docker/i.test(text)) {
-                signals.push('Tooling and automation work showed how much delivery quality depends on repeatable workflows and environment consistency.');
+              if (action === 'persistence' || area === 'Persistence') {
+                signals.push('Persistence work reinforced the importance of keeping data-access concerns aligned with application and domain boundaries.');
               }
-              if (/test|spec|coverage/i.test(text)) {
+              if (action === 'automation' || area === 'Infrastructure / DevOps') {
+                signals.push('Tooling and automation work showed how much delivery quality depends on repeatable workflows and consistent environments.');
+              }
+              if (action === 'testing' || area === 'Testing') {
                 signals.push('Test-related work reinforced the value of validating behavior early instead of relying only on manual verification.');
               }
-              if (/auth|identity|jwt|refresh token|authorization|role|permission/i.test(text)) {
-                signals.push('Authentication and authorization work highlighted the need to design security concerns deliberately rather than treating them as thin plumbing.');
+              if (action === 'refactor') {
+                signals.push('Refactoring work highlighted the value of keeping responsibilities and boundaries explicit as the codebase evolves.');
+              }
+              if (area === 'Frontend Web' || area === 'Admin UI') {
+                signals.push('UI-related work reinforced the importance of keeping presentation concerns separate from transport and domain behavior.');
+              }
+              if (area === 'Shared Building Blocks') {
+                signals.push('Shared abstractions proved most useful when they stayed minimal and avoided leaking domain responsibilities across boundaries.');
               }
 
               return signals;
             }
 
             function summarizeCommit(msg, branch) {
-              const text = `${branch} ${msg}`;
-              const area = detectArea(text);
+              const combined = `${branch} ${msg}`;
+              const area = detectArea(combined);
               const action = detectAction(msg);
-              const techniques = detectTechniques(text);
-              const learningSignals = detectLearningSignals(text);
+              const techniques = detectTechniques(combined);
+              const architectureSignals = detectArchitectureSignals(combined);
+              const learningSignals = detectLearningSignals(combined, area, action);
 
               return {
                 area,
                 action,
                 techniques,
+                architectureSignals,
                 learningSignals,
-                raw: msg
+                raw: msg,
+                branch
               };
             }
 
-            function makeWeekState() {
-              return {
-                commits: [],
-                accomplishedSignals: {
-                  areaAction: new Map(),
-                  architecture: [],
-                  techniques: [],
-                  learnings: []
-                },
-                warnings: []
-              };
-            }
-
-            function addAccomplishmentSignal(state, area, action, msg) {
-              const key = `${area}__${action}`;
-              if (!state.accomplishedSignals.areaAction.has(key)) {
-                state.accomplishedSignals.areaAction.set(key, { area, action, count: 0, examples: [] });
-              }
-              const item = state.accomplishedSignals.areaAction.get(key);
-              item.count += 1;
-              if (item.examples.length < 2) {
-                item.examples.push(msg);
-              }
-            }
-
-            function addSignalsFromCommit(state, analyzed) {
+            function addCommitToWeek(state, analyzed) {
               state.commits.push(analyzed);
-              addAccomplishmentSignal(state, analyzed.area, analyzed.action, analyzed.raw);
+
+              incrementMap(state.areaCounts, analyzed.area);
+              incrementMap(state.actionCounts, analyzed.action);
+              incrementMap(state.areaActionCounts, `${analyzed.area}__${analyzed.action}`);
+
+              addExample(state, `${analyzed.area}__${analyzed.action}`, analyzed.raw, 2);
 
               for (const tech of analyzed.techniques) {
-                state.accomplishedSignals.techniques.push(tech);
+                incrementMap(state.techniqueCounts, tech);
+              }
+              for (const signal of analyzed.architectureSignals) {
+                incrementMap(state.architectureSignals, signal);
               }
               for (const learning of analyzed.learningSignals) {
-                state.accomplishedSignals.learnings.push(learning);
-              }
-
-              const lower = analyzed.raw.toLowerCase();
-              if (/architecture|adr|boundary|aggregate|cqrs|clean architecture|ddd/i.test(lower)) {
-                state.accomplishedSignals.architecture.push(analyzed.raw);
+                incrementMap(state.learningSignals, learning);
               }
             }
 
-            function actionToPhrase(action, area) {
+            function actionPhrase(action, area) {
               const map = {
                 'feature': `Implemented new functionality in ${area}.`,
                 'fix': `Resolved defects and stabilized behavior in ${area}.`,
                 'refactor': `Refined internal structure and maintainability in ${area}.`,
-                'docs': `Expanded documentation related to ${area}.`,
-                'chore': `Completed support and maintenance work around ${area}.`,
-                'ci': `Improved automation and delivery workflow for ${area}.`,
-                'test': `Added or improved automated verification around ${area}.`,
+                'documentation': `Expanded documentation and design notes related to ${area}.`,
+                'maintenance': `Completed support and maintenance work around ${area}.`,
+                'automation': `Improved tooling, environment setup, or automation around ${area}.`,
+                'testing': `Added or improved automated verification around ${area}.`,
                 'domain-modeling': `Advanced domain modeling decisions in ${area}.`,
-                'api-design': `Refined API surface and contract decisions in ${area}.`,
-                'persistence': `Improved persistence and data-access design in ${area}.`,
-                'automation': `Strengthened tooling and automation around ${area}.`,
+                'application-flow': `Refined application flow and use-case orchestration in ${area}.`,
+                'api-contract': `Clarified API contracts and request/response behavior in ${area}.`,
+                'persistence': `Improved persistence and data-access structure in ${area}.`,
+                'security': `Strengthened security-related behavior and access control in ${area}.`,
+                'integration': `Progressed integration-related work in ${area}.`,
+                'ui-implementation': `Advanced user-interface implementation in ${area}.`,
                 'research': `Investigated technical direction and implementation options for ${area}.`,
-                'learning': `Captured and applied new understanding while working in ${area}.`,
                 'implementation': `Continued implementation work in ${area}.`
               };
               return map[action] || `Continued implementation work in ${area}.`;
             }
 
-            function techniqueSentence(techniques) {
-              if (!techniques.length) return null;
-              const top = unique(techniques).slice(0, 4);
-              return `This week’s work touched techniques and tools such as ${top.join(', ')}.`;
+            function formatListInline(items) {
+              if (!items.length) return '';
+              if (items.length === 1) return items[0];
+              if (items.length === 2) return `${items[0]} and ${items[1]}`;
+              return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+            }
+
+            function buildTechniqueSentence(state) {
+              const topTechniques = sortEntriesDesc(state.techniqueCounts)
+                .slice(0, 5)
+                .map(([name]) => name);
+
+              if (!topTechniques.length) return null;
+
+              return `This week’s work relied on techniques and tools such as ${formatListInline(topTechniques)}.`;
+            }
+
+            function buildArchitectureSentences(state) {
+              return sortEntriesDesc(state.architectureSignals)
+                .slice(0, 2)
+                .map(([signal]) => signal);
             }
 
             function buildAccomplished(state) {
@@ -353,44 +457,25 @@ jobs:
               }
 
               const lines = [];
-              const items = Array.from(state.accomplishedSignals.areaAction.values())
-                .sort((a, b) => b.count - a.count || a.area.localeCompare(b.area))
-                .slice(0, 6);
 
-              for (const item of items) {
-                lines.push(`- ${actionToPhrase(item.action, item.area)}`);
+              const dominantPairs = sortEntriesDesc(state.areaActionCounts)
+                .slice(0, 6)
+                .map(([key]) => {
+                  const [area, action] = key.split('__');
+                  return { area, action };
+                });
+
+              for (const pair of dominantPairs) {
+                lines.push(`- ${actionPhrase(pair.action, pair.area)}`);
               }
 
-              if (state.accomplishedSignals.architecture.length > 0) {
-                const architectureHints = unique(
-                  state.accomplishedSignals.architecture
-                    .map(x => {
-                      const lower = x.toLowerCase();
-                      if (/aggregate|entity|valueobject|domain/i.test(lower)) {
-                        return 'Architectural work this week included clarifying domain-model boundaries and business concepts.';
-                      }
-                      if (/cqrs|mediatr/i.test(lower)) {
-                        return 'Architectural work this week reflected CQRS-style separation of behavior and request handling.';
-                      }
-                      if (/clean architecture|boundary|architecture/i.test(lower)) {
-                        return 'Architectural work this week focused on enforcing clearer service and layer boundaries.';
-                      }
-                      if (/repository|persistence|migration|dbcontext/i.test(lower)) {
-                        return 'Architectural work this week included persistence design decisions and data-access structure.';
-                      }
-                      return null;
-                    })
-                    .filter(Boolean)
-                ).slice(0, 2);
-
-                for (const hint of architectureHints) {
-                  lines.push(`- ${hint}`);
-                }
+              for (const arch of buildArchitectureSentences(state)) {
+                lines.push(`- ${arch}`);
               }
 
-              const techniqueLine = techniqueSentence(state.accomplishedSignals.techniques);
-              if (techniqueLine) {
-                lines.push(`- ${techniqueLine}`);
+              const techniqueSentence = buildTechniqueSentence(state);
+              if (techniqueSentence) {
+                lines.push(`- ${techniqueSentence}`);
               }
 
               return unique(lines).join('\n');
@@ -401,19 +486,25 @@ jobs:
                 return '- (reflect on key learnings from this week)';
               }
 
-              const learned = unique(state.accomplishedSignals.learnings).slice(0, 4);
+              const topLearned = sortEntriesDesc(state.learningSignals)
+                .slice(0, 4)
+                .map(([signal]) => signal);
 
-              if (!learned.length) {
-                const fallback = [];
-                const techniqueLine = techniqueSentence(state.accomplishedSignals.techniques);
-                if (techniqueLine) {
-                  fallback.push(techniqueLine.replace("This week’s work touched", 'The work reinforced practical understanding of'));
-                }
-                fallback.push('Progress this week confirmed that meaningful delivery history depends on clear commit intent and explicit architectural decisions.');
-                return unique(fallback).join('\n- ').replace(/^/, '- ');
+              if (topLearned.length) {
+                return topLearned.map(x => `- ${x}`).join('\n');
               }
 
-              return learned.map(x => `- ${x}`).join('\n');
+              const fallback = [];
+              if (state.commits.length > 0) {
+                fallback.push('- Progress this week confirmed that clearer commit intent produces a much more useful technical history.');
+              }
+
+              const topAreas = sortEntriesDesc(state.areaCounts).slice(0, 2).map(([a]) => a);
+              if (topAreas.length) {
+                fallback.push(`- The week’s work concentrated mainly on ${formatListInline(topAreas)}, which made architectural direction easier to infer from repository history.`);
+              }
+
+              return unique(fallback).join('\n');
             }
 
             function inferNextWeekProgress(nextState) {
@@ -421,31 +512,45 @@ jobs:
                 return '- (no clear follow-up activity inferred from the next week)';
               }
 
-              const topAreas = Array.from(nextState.accomplishedSignals.areaAction.values())
-                .sort((a, b) => b.count - a.count)
-                .slice(0, 3);
+              const dominantPairs = sortEntriesDesc(nextState.areaActionCounts)
+                .slice(0, 3)
+                .map(([key]) => {
+                  const [area, action] = key.split('__');
+                  return { area, action };
+                });
 
-              if (!topAreas.length) {
+              if (!dominantPairs.length) {
                 return '- Continued work is expected to evolve from the current week’s implementation direction.';
               }
 
-              const lines = topAreas.map(item => {
-                switch (item.action) {
+              const lines = dominantPairs.map(pair => {
+                switch (pair.action) {
                   case 'domain-modeling':
-                    return `- Ongoing work appears to continue in ${item.area}, especially around domain-model refinement and business structure.`;
-                  case 'api-design':
-                    return `- Ongoing work appears to continue in ${item.area}, with further API and contract refinement.`;
+                    return `- Ongoing work appears to continue in ${pair.area}, especially around domain modeling and business-rule structure.`;
+                  case 'application-flow':
+                    return `- Ongoing work appears to continue in ${pair.area}, with further refinement of use-case flow and orchestration.`;
+                  case 'api-contract':
+                    return `- Ongoing work appears to continue in ${pair.area}, with additional API and contract refinement.`;
                   case 'persistence':
-                    return `- Ongoing work appears to continue in ${item.area}, particularly in data-access and persistence design.`;
-                  case 'test':
-                    return `- Ongoing work appears to continue in ${item.area}, with stronger emphasis on validation and verification.`;
+                    return `- Ongoing work appears to continue in ${pair.area}, particularly in persistence and data-access design.`;
+                  case 'security':
+                    return `- Ongoing work appears to continue in ${pair.area}, with further security and access-control refinement.`;
+                  case 'integration':
+                    return `- Ongoing work appears to continue in ${pair.area}, especially around external integration boundaries and request flow.`;
+                  case 'ui-implementation':
+                    return `- Ongoing work appears to continue in ${pair.area}, with further UI implementation and interaction refinement.`;
                   case 'refactor':
-                    return `- Ongoing work appears to continue in ${item.area}, with further refactoring and structural cleanup.`;
-                  case 'ci':
+                    return `- Ongoing work appears to continue in ${pair.area}, with further refactoring and structural cleanup.`;
+                  case 'testing':
+                    return `- Ongoing work appears to continue in ${pair.area}, with stronger emphasis on validation and automated verification.`;
                   case 'automation':
-                    return `- Ongoing work appears to continue in ${item.area}, especially around automation and workflow hardening.`;
+                    return `- Ongoing work appears to continue in ${pair.area}, especially around automation and workflow hardening.`;
+                  case 'documentation':
+                    return `- Ongoing work appears to continue in ${pair.area}, with additional documentation and design clarification.`;
+                  case 'research':
+                    return `- Ongoing work appears to continue in ${pair.area}, with further technical exploration before implementation is finalized.`;
                   default:
-                    return `- Ongoing work appears to continue in ${item.area}, building on this implementation direction.`;
+                    return `- Ongoing work appears to continue in ${pair.area}, building on the current implementation direction.`;
                 }
               });
 
@@ -466,7 +571,6 @@ jobs:
               const month = String(weekStart.getUTCMonth() + 1).padStart(2, '0');
               const monthName = monthNameUTC(weekStart);
               const weekNumber = getMonthWeekNumber(weekStart);
-
               const notes = buildNotes(state);
 
               return {
@@ -499,6 +603,8 @@ jobs:
             const repoCreatedAt = new Date(repoResponse.data.created_at);
             const now = new Date();
             const since = repoCreatedAt.toISOString();
+
+            core.info(`Repository created at: ${repoResponse.data.created_at}`);
 
             const branches = await github.paginate(
               github.rest.repos.listBranches,
@@ -557,9 +663,8 @@ jobs:
                     weeks.set(weekKey, makeWeekState());
                   }
 
-                  const state = weeks.get(weekKey);
                   const analyzed = summarizeCommit(msg, branchName);
-                  addSignalsFromCommit(state, analyzed);
+                  addCommitToWeek(weeks.get(weekKey), analyzed);
                 }
               } catch (error) {
                 const message = error?.message || 'Unknown branch read error';
@@ -584,6 +689,7 @@ jobs:
             for (let i = 0; i < orderedWeekStarts.length; i++) {
               const weekStart = orderedWeekStarts[i];
               const weekKey = formatDateUTC(weekStart);
+
               const nextWeekStart = orderedWeekStarts[i + 1];
               const nextWeekKey = nextWeekStart ? formatDateUTC(nextWeekStart) : null;
 
@@ -618,7 +724,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "chore(devlog): rebuild changelog from private repo history"
+          git commit -m "chore(devlog): rebuild changelog from private repo history v2"
           git push
 
       - name: Print summary
