@@ -1,4 +1,4 @@
-name: DevLog Backfill (V3)
+name: DevLog Backfill (V3.1)
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ jobs:
       - name: Checkout Roadmap Repo
         uses: actions/checkout@v4
 
-      - name: Generate DevLogs (V3)
+      - name: Generate DevLogs (V3.1)
         uses: actions/github-script@v7
         with:
           script: |
@@ -27,6 +27,9 @@ jobs:
               }
             );
 
+            // ---------------------------
+            // WEEK GROUPING
+            // ---------------------------
             function getWeekKey(date) {
               const d = new Date(date);
               const year = d.getFullYear();
@@ -37,6 +40,9 @@ jobs:
               return `${year}-${month}-week-${String(week).padStart(2, '0')}`;
             }
 
+            // ---------------------------
+            // DETECTION LAYER
+            // ---------------------------
             function detectArea(msg) {
               const m = msg.toLowerCase();
 
@@ -46,10 +52,10 @@ jobs:
               if (m.match(/payment|transaction|provider/)) return 'Payments Service';
               if (m.match(/delivery|shipment|tracking/)) return 'Delivery Service';
               if (m.match(/react|frontend|ui|page|component/)) return 'Web Frontend';
-              if (m.match(/admin|dashboard|management/)) return 'Admin Frontend';
-              if (m.match(/gateway|ocelot|proxy/)) return 'API Gateway';
-              if (m.match(/valueobject|aggregate|shared|result|stronglytyped/)) return 'Shared Building Blocks';
-              if (m.match(/docker|ci|cd|pipeline|workflow|env|deploy/)) return 'Infrastructure / DevOps';
+              if (m.match(/admin|dashboard/)) return 'Admin Frontend';
+              if (m.match(/gateway|ocelot/)) return 'API Gateway';
+              if (m.match(/valueobject|aggregate|result|stronglytyped/)) return 'Shared Building Blocks';
+              if (m.match(/docker|ci|cd|pipeline|workflow|env/)) return 'Infrastructure / DevOps';
               if (m.match(/doc|readme|adr|architecture|roadmap/)) return 'Architecture / Documentation';
 
               return 'Backend Service';
@@ -58,76 +64,103 @@ jobs:
             function detectSubArea(msg) {
               const m = msg.toLowerCase();
 
-              if (m.match(/refresh token|session|token/)) return 'Token / Session Management';
-              if (m.match(/role|permission|rbac/)) return 'Authorization';
-              if (m.match(/wine image|image|sort/)) return 'Catalog Media';
-              if (m.match(/repository|migration|db|context/)) return 'Persistence';
-              if (m.match(/api|endpoint|contract/)) return 'API Contracts';
-              if (m.match(/docker|compose/)) return 'Environment Setup';
-              if (m.match(/test|validation/)) return 'Testing / Validation';
-              if (m.match(/value object|aggregate|entity/)) return 'Domain Modeling';
+              if (m.match(/refresh token|session/)) return 'token and session management';
+              if (m.match(/role|permission|rbac/)) return 'authorization and access control';
+              if (m.match(/wine image|image|sort/)) return 'media and image handling';
+              if (m.match(/repository|migration|db|context/)) return 'persistence and data access';
+              if (m.match(/api|endpoint|contract/)) return 'API contracts';
+              if (m.match(/docker|compose/)) return 'environment setup';
+              if (m.match(/test|validation/)) return 'testing and validation';
+              if (m.match(/aggregate|entity|model/)) return 'domain modeling';
 
-              return 'General';
+              return 'core functionality';
             }
 
             function detectAction(msg) {
               const m = msg.toLowerCase();
 
-              if (m.startsWith('feat')) return 'Application Flow';
-              if (m.startsWith('fix')) return 'Refactoring';
-              if (m.startsWith('refactor')) return 'Refactoring';
-              if (m.startsWith('docs')) return 'Documentation';
-              if (m.startsWith('test')) return 'Testing';
-              if (m.startsWith('ci')) return 'Automation';
+              if (m.startsWith('feat')) return 'implemented';
+              if (m.startsWith('fix')) return 'fixed';
+              if (m.startsWith('refactor')) return 'refactored';
+              if (m.startsWith('docs')) return 'documented';
+              if (m.startsWith('test')) return 'tested';
+              if (m.startsWith('ci')) return 'automated';
 
-              if (m.match(/security|auth|token/)) return 'Security';
-              if (m.match(/repository|db|migration/)) return 'Persistence';
-              if (m.match(/api|endpoint/)) return 'API Contract';
-              if (m.match(/model|entity|aggregate/)) return 'Domain Modeling';
+              if (m.match(/security|auth|token/)) return 'strengthened';
+              if (m.match(/repository|db|migration/)) return 'improved';
+              if (m.match(/api|endpoint/)) return 'refined';
+              if (m.match(/model|aggregate/)) return 'modeled';
 
-              return 'Application Flow';
+              return 'worked on';
             }
 
+            function detectTech(msg) {
+              const m = msg.toLowerCase();
+
+              const tech = [];
+
+              if (m.includes('jwt')) tech.push('JWT');
+              if (m.includes('token')) tech.push('refresh token strategies');
+              if (m.includes('ef') || m.includes('db')) tech.push('EF Core');
+              if (m.includes('docker')) tech.push('Docker');
+              if (m.includes('repository')) tech.push('repository pattern');
+              if (m.includes('cqrs')) tech.push('CQRS');
+
+              return tech;
+            }
+
+            // ---------------------------
+            // BUILD NARRATIVE
+            // ---------------------------
             function buildAccomplished(items) {
               const lines = [];
+              const techSet = new Set();
 
-              items.forEach(([key]) => {
+              items.slice(0, 4).forEach(([key]) => {
                 const [area, sub, action] = key.split('__');
 
-                lines.push(
-                  `${action} improvements in ${area} around ${sub.toLowerCase()}.`
-                );
+                const sentence = `${action} parts of the ${area} focusing on ${sub}.`;
+                lines.push(sentence);
               });
 
+              items.forEach(([key]) => {
+                detectTech(key).forEach(t => techSet.add(t));
+              });
+
+              if (techSet.size > 0) {
+                lines.push(
+                  `This week also involved working with ${Array.from(techSet).join(', ')}.`
+                );
+              }
+
               lines.push(
-                'This week’s work reflects ongoing refinement of service boundaries, persistence concerns, and API behavior.'
+                'Overall, this week contributed to strengthening core architecture boundaries and improving system clarity.'
               );
 
-              return lines.slice(0, 5);
+              return lines;
             }
 
             function buildLearned(items) {
               const lessons = [];
+              const text = items.map(i => i[0]).join(' ').toLowerCase();
 
-              const keys = items.map(i => i[0].toLowerCase()).join(' ');
-
-              if (keys.includes('identity') && keys.includes('persistence')) {
-                lessons.push('Identity-related work highlighted the importance of keeping token and session logic outside core domain models.');
+              if (text.includes('identity') && text.includes('persistence')) {
+                lessons.push('Working on identity and persistence clarified how authentication data should remain outside core domain models.');
               }
 
-              if (keys.includes('catalog') && keys.includes('api')) {
-                lessons.push('Catalog work reinforced that strong domain modeling simplifies API contract design.');
+              if (text.includes('catalog') && text.includes('api')) {
+                lessons.push('Catalog work showed that better domain modeling leads to cleaner and more predictable API contracts.');
               }
 
-              if (keys.includes('shared') || keys.includes('value')) {
-                lessons.push('Shared building blocks must remain minimal and avoid leaking domain-specific logic.');
+              if (text.includes('shared')) {
+                lessons.push('Shared components are most effective when they stay minimal and avoid domain-specific responsibilities.');
               }
 
               if (lessons.length === 0) {
-                lessons.push('This week reinforced the importance of aligning architecture decisions with long-term maintainability.');
+                lessons.push('This week reinforced the importance of aligning implementation decisions with long-term architectural goals.');
               }
 
-              return lessons.slice(0, 3);
+              return lessons;
             }
 
             function inferNextProgress(currentKey, weeks) {
@@ -145,10 +178,13 @@ jobs:
               });
 
               return Array.from(areas).slice(0, 2).map(a =>
-                `Ongoing work appears to continue in ${a}.`
+                `Work is expected to continue in ${a}, building on the current progress.`
               );
             }
 
+            // ---------------------------
+            // AGGREGATION
+            // ---------------------------
             const weeks = {};
 
             for (const commit of commits) {
@@ -202,5 +238,5 @@ ${learned.map(l => `- ${l}`).join('\n')}
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add .
-          git commit -m "chore(devlog): regenerate changelogs (V3)"
+          git commit -m "chore(devlog): regenerate changelogs (V3.1)"
           git push
