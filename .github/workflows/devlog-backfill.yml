@@ -3,60 +3,143 @@ name: DevLog Backfill (V3.1)
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   backfill-devlogs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Roadmap Repo
+      - name: Checkout roadmap repo
         uses: actions/checkout@v4
 
-      - name: Generate DevLogs (V3.1)
+      - name: Ensure changelog directory exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p changelog
+
+      - name: Generate devlogs from private repo history
+        id: build
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.DEVLOG_TOKEN }}
           script: |
+            const fs = require('fs');
+            const path = require('path');
+
             const owner = 'wine-online-store';
             const repo = 'wine-marketplace';
 
-            const commits = await github.paginate(
-              github.rest.repos.listCommits,
-              {
-                owner,
-                repo,
-                per_page: 100,
-              }
-            );
+            const includeBranchPatterns = [
+              /^main$/i,
+              /^develop$/i,
+              /^feature\//i,
+              /^bugfix\//i,
+              /^hotfix\//i,
+              /^release\//i
+            ];
 
-            // ---------------------------
-            // WEEK GROUPING
-            // ---------------------------
-            function getWeekKey(date) {
-              const d = new Date(date);
-              const year = d.getFullYear();
-              const firstDay = new Date(year, 0, 1);
-              const pastDays = Math.floor((d - firstDay) / 86400000);
-              const week = Math.ceil((pastDays + firstDay.getDay() + 1) / 7);
-              const month = String(d.getMonth() + 1).padStart(2, '0');
-              return `${year}-${month}-week-${String(week).padStart(2, '0')}`;
+            const excludeBranchPatterns = [
+              /^gh-pages$/i,
+              /^dependabot\//i
+            ];
+
+            function matchesAny(name, patterns) {
+              return patterns.some((p) => p.test(name));
             }
 
-            // ---------------------------
-            // DETECTION LAYER
-            // ---------------------------
+            function shouldIncludeBranch(branchName) {
+              if (matchesAny(branchName, excludeBranchPatterns)) {
+                return false;
+              }
+              return matchesAny(branchName, includeBranchPatterns);
+            }
+
+            function normalizeMessage(msgFull) {
+              return String(msgFull || '').split('\n')[0].trim();
+            }
+
+            function startOfWeekUTC(dateObj) {
+              const d = new Date(Date.UTC(
+                dateObj.getUTCFullYear(),
+                dateObj.getUTCMonth(),
+                dateObj.getUTCDate()
+              ));
+              const day = d.getUTCDay(); // 0=Sun, 1=Mon
+              const diff = day === 0 ? -6 : 1 - day;
+              d.setUTCDate(d.getUTCDate() + diff);
+              d.setUTCHours(0, 0, 0, 0);
+              return d;
+            }
+
+            function formatDateUTC(dateObj) {
+              return dateObj.toISOString().slice(0, 10);
+            }
+
+            function monthNameUTC(dateObj) {
+              return dateObj.toLocaleString('en-US', {
+                month: 'long',
+                timeZone: 'UTC'
+              });
+            }
+
+            function getMonthWeekNumber(weekStart) {
+              const year = weekStart.getUTCFullYear();
+              const month = weekStart.getUTCMonth();
+
+              let cursor = new Date(Date.UTC(year, month, 1));
+              cursor = startOfWeekUTC(cursor);
+
+              let week = 1;
+              while (cursor.getTime() < weekStart.getTime()) {
+                cursor.setUTCDate(cursor.getUTCDate() + 7);
+                week++;
+              }
+
+              return week;
+            }
+
+            function unique(arr) {
+              return Array.from(new Set(arr));
+            }
+
+            function sortEntriesDesc(map) {
+              return Array.from(map.entries()).sort((a, b) => {
+                if (b[1] !== a[1]) return b[1] - a[1];
+                return a[0].localeCompare(b[0]);
+              });
+            }
+
+            function incrementMap(map, key, amount = 1) {
+              map.set(key, (map.get(key) || 0) + amount);
+            }
+
+            function makeWeekState() {
+              return {
+                commits: [],
+                areaActionCounts: new Map(),
+                areaCounts: new Map(),
+                learningSignals: new Map(),
+                techniqueCounts: new Map()
+              };
+            }
+
             function detectArea(msg) {
               const m = msg.toLowerCase();
 
-              if (m.match(/identity|auth|jwt|token|session|user|role/)) return 'Identity Service';
-              if (m.match(/catalog|wine|winery|region|grape/)) return 'Catalog Service';
-              if (m.match(/order|cart|checkout/)) return 'Orders Service';
-              if (m.match(/payment|transaction|provider/)) return 'Payments Service';
-              if (m.match(/delivery|shipment|tracking/)) return 'Delivery Service';
-              if (m.match(/react|frontend|ui|page|component/)) return 'Web Frontend';
-              if (m.match(/admin|dashboard/)) return 'Admin Frontend';
-              if (m.match(/gateway|ocelot/)) return 'API Gateway';
-              if (m.match(/valueobject|aggregate|result|stronglytyped/)) return 'Shared Building Blocks';
-              if (m.match(/docker|ci|cd|pipeline|workflow|env/)) return 'Infrastructure / DevOps';
-              if (m.match(/doc|readme|adr|architecture|roadmap/)) return 'Architecture / Documentation';
+              if (/(identity|auth|jwt|token|session|user|role|permission|rbac)/i.test(m)) return 'Identity Service';
+              if (/(catalog|wine|winery|region|grape|appellation|vintage)/i.test(m)) return 'Catalog Service';
+              if (/(order|cart|checkout|basket)/i.test(m)) return 'Orders Service';
+              if (/(payment|transaction|provider|billing|refund|invoice)/i.test(m)) return 'Payments Service';
+              if (/(delivery|shipment|shipping|tracking|carrier|fulfillment)/i.test(m)) return 'Delivery Service';
+              if (/(react|frontend|vite|typescript|page|component|layout|hook|form|ui)/i.test(m)) return 'Web Frontend';
+              if (/(admin|dashboard|backoffice|management panel)/i.test(m)) return 'Admin Frontend';
+              if (/(gateway|ocelot|proxy|routing|bff)/i.test(m)) return 'API Gateway';
+              if (/(value object|valueobject|aggregate root|strongly typed id|shared|kernel|result pattern|base entity)/i.test(m)) return 'Shared Building Blocks';
+              if (/(docker|compose|workflow|pipeline|github actions|ci|cd|environment|deployment|infra|logging|observability|monitoring)/i.test(m)) return 'Infrastructure / DevOps';
+              if (/(docs|readme|adr|architecture|roadmap|design|decision|planning)/i.test(m)) return 'Architecture / Documentation';
 
               return 'Backend Service';
             }
@@ -64,14 +147,16 @@ jobs:
             function detectSubArea(msg) {
               const m = msg.toLowerCase();
 
-              if (m.match(/refresh token|session/)) return 'token and session management';
-              if (m.match(/role|permission|rbac/)) return 'authorization and access control';
-              if (m.match(/wine image|image|sort/)) return 'media and image handling';
-              if (m.match(/repository|migration|db|context/)) return 'persistence and data access';
-              if (m.match(/api|endpoint|contract/)) return 'API contracts';
-              if (m.match(/docker|compose/)) return 'environment setup';
-              if (m.match(/test|validation/)) return 'testing and validation';
-              if (m.match(/aggregate|entity|model/)) return 'domain modeling';
+              if (/(refresh token|token rotation|token family|session)/i.test(m)) return 'token and session management';
+              if (/(role|permission|rbac|authorization|access control)/i.test(m)) return 'authorization and access control';
+              if (/(wine image|image sort|sort order|media|image)/i.test(m)) return 'media and image handling';
+              if (/(repository|migration|dbcontext|database|sql|persistence|query)/i.test(m)) return 'persistence and data access';
+              if (/(api|endpoint|contract|swagger|request|response)/i.test(m)) return 'API contracts';
+              if (/(docker|compose|environment|configuration|settings)/i.test(m)) return 'environment setup';
+              if (/(test|validation|validator|coverage|spec)/i.test(m)) return 'testing and validation';
+              if (/(aggregate|entity|value object|valueobject|domain model|domain modeling|invariant)/i.test(m)) return 'domain modeling';
+              if (/(handler|use case|application flow|command|query|mediatr|cqrs)/i.test(m)) return 'application flow';
+              if (/(roadmap|adr|architecture|design note|boundary|layer)/i.test(m)) return 'architecture and design direction';
 
               return 'core functionality';
             }
@@ -79,164 +164,392 @@ jobs:
             function detectAction(msg) {
               const m = msg.toLowerCase();
 
-              if (m.startsWith('feat')) return 'implemented';
-              if (m.startsWith('fix')) return 'fixed';
-              if (m.startsWith('refactor')) return 'refactored';
-              if (m.startsWith('docs')) return 'documented';
-              if (m.startsWith('test')) return 'tested';
-              if (m.startsWith('ci')) return 'automated';
+              if (/^feat(\(.+\))?:/i.test(msg)) return 'implemented';
+              if (/^fix(\(.+\))?:/i.test(msg)) return 'fixed';
+              if (/^refactor(\(.+\))?:/i.test(msg)) return 'refactored';
+              if (/^docs?(\(.+\))?:/i.test(msg)) return 'documented';
+              if (/^tests?(\(.+\))?:/i.test(msg)) return 'tested';
+              if (/^ci(\(.+\))?:/i.test(msg)) return 'automated';
 
-              if (m.match(/security|auth|token/)) return 'strengthened';
-              if (m.match(/repository|db|migration/)) return 'improved';
-              if (m.match(/api|endpoint/)) return 'refined';
-              if (m.match(/model|aggregate/)) return 'modeled';
+              if (/(security|auth|jwt|token|authorization|permission|role)/i.test(m)) return 'strengthened';
+              if (/(repository|migration|dbcontext|database|sql|persistence)/i.test(m)) return 'improved';
+              if (/(api|endpoint|contract|request|response|swagger)/i.test(m)) return 'refined';
+              if (/(aggregate|entity|domain model|domain modeling|value object|valueobject)/i.test(m)) return 'modeled';
 
-              return 'worked on';
+              return 'advanced';
             }
 
-            function detectTech(msg) {
+            function detectTechniques(msg) {
               const m = msg.toLowerCase();
-
               const tech = [];
 
-              if (m.includes('jwt')) tech.push('JWT');
-              if (m.includes('token')) tech.push('refresh token strategies');
-              if (m.includes('ef') || m.includes('db')) tech.push('EF Core');
-              if (m.includes('docker')) tech.push('Docker');
-              if (m.includes('repository')) tech.push('repository pattern');
-              if (m.includes('cqrs')) tech.push('CQRS');
+              if (/clean architecture/i.test(m)) tech.push('Clean Architecture');
+              if (/\bddd\b/i.test(m)) tech.push('DDD');
+              if (/\bcqrs\b/i.test(m)) tech.push('CQRS');
+              if (/mediatr/i.test(m)) tech.push('MediatR');
+              if (/ef core|dbcontext|migration/i.test(m)) tech.push('EF Core');
+              if (/\bjwt\b/i.test(m)) tech.push('JWT');
+              if (/refresh token/i.test(m)) tech.push('refresh token strategies');
+              if (/repository/i.test(m)) tech.push('repository pattern');
+              if (/docker|compose/i.test(m)) tech.push('Docker');
+              if (/github actions|workflow/i.test(m)) tech.push('GitHub Actions');
+              if (/react/i.test(m)) tech.push('React');
+              if (/typescript/i.test(m)) tech.push('TypeScript');
+              if (/validation|validator/i.test(m)) tech.push('validation');
+              if (/logging|observability|monitoring/i.test(m)) tech.push('logging and observability');
+              if (/problem details|problemdetails|exception|error handling/i.test(m)) tech.push('error handling');
+              if (/value object|valueobject/i.test(m)) tech.push('value objects');
+              if (/strongly typed id/i.test(m)) tech.push('strongly typed IDs');
+              if (/aggregate root/i.test(m)) tech.push('aggregate roots');
+              if (/result pattern|\bresult\b/i.test(m)) tech.push('result pattern');
 
               return tech;
             }
 
-            // ---------------------------
-            // BUILD NARRATIVE
-            // ---------------------------
-            function buildAccomplished(items) {
-              const lines = [];
-              const techSet = new Set();
+            function detectLearningSignals(area, subArea, action, msg) {
+              const m = msg.toLowerCase();
+              const signals = [];
 
-              items.slice(0, 4).forEach(([key]) => {
-                const [area, sub, action] = key.split('__');
-
-                const sentence = `${action} parts of the ${area} focusing on ${sub}.`;
-                lines.push(sentence);
-              });
-
-              items.forEach(([key]) => {
-                detectTech(key).forEach(t => techSet.add(t));
-              });
-
-              if (techSet.size > 0) {
-                lines.push(
-                  `This week also involved working with ${Array.from(techSet).join(', ')}.`
-                );
+              if (area === 'Identity Service' && /persistence|repository|dbcontext|database|sql/.test(m)) {
+                signals.push('Work on identity and persistence clarified how authentication data should remain outside core domain models.');
               }
 
-              lines.push(
-                'Overall, this week contributed to strengthening core architecture boundaries and improving system clarity.'
-              );
+              if (area === 'Catalog Service' && /api|endpoint|contract|request|response/.test(m)) {
+                signals.push('Catalog work showed that better domain modeling leads to cleaner and more predictable API contracts.');
+              }
+
+              if (area === 'Shared Building Blocks') {
+                signals.push('Shared components are most effective when they stay minimal and avoid domain-specific responsibilities.');
+              }
+
+              if (area === 'Infrastructure / DevOps') {
+                signals.push('Tooling and environment work reinforced how much delivery quality depends on repeatable local and CI workflows.');
+              }
+
+              if (/(test|validation|validator|coverage|spec)/i.test(m)) {
+                signals.push('Validation and testing work highlighted the value of tightening contracts before behavior spreads further across the codebase.');
+              }
+
+              if (/(boundary|layer|architecture|clean architecture|ddd|cqrs)/i.test(m)) {
+                signals.push('Architectural work this week reinforced the importance of explicit boundaries between domain, application, and infrastructure concerns.');
+              }
+
+              if (signals.length === 0) {
+                if (area === 'Catalog Service') {
+                  signals.push('Catalog work reinforced the importance of making business concepts explicit before expanding surrounding contracts and persistence logic.');
+                } else if (area === 'Identity Service') {
+                  signals.push('Identity work highlighted the need for deliberate security boundaries instead of scattering authentication concerns across the stack.');
+                } else if (action === 'refactored') {
+                  signals.push('Refactoring this week reinforced the value of improving structure before complexity becomes entrenched.');
+                }
+              }
+
+              return signals;
+            }
+
+            function summarizeCommit(msg) {
+              const area = detectArea(msg);
+              const subArea = detectSubArea(msg);
+              const action = detectAction(msg);
+              const techniques = detectTechniques(msg);
+              const learningSignals = detectLearningSignals(area, subArea, action, msg);
+
+              return {
+                area,
+                subArea,
+                action,
+                techniques,
+                learningSignals,
+                raw: msg
+              };
+            }
+
+            function addCommitToWeek(state, analyzed) {
+              state.commits.push(analyzed);
+
+              incrementMap(state.areaCounts, analyzed.area);
+              incrementMap(state.areaActionCounts, analyzed.area + '__' + analyzed.subArea + '__' + analyzed.action);
+
+              for (const tech of analyzed.techniques) {
+                incrementMap(state.techniqueCounts, tech);
+              }
+
+              for (const signal of analyzed.learningSignals) {
+                incrementMap(state.learningSignals, signal);
+              }
+            }
+
+            function buildAccomplished(state) {
+              const lines = [];
+
+              const dominantPairs = sortEntriesDesc(state.areaActionCounts)
+                .slice(0, 4)
+                .map(([key]) => {
+                  const parts = key.split('__');
+                  return {
+                    area: parts[0],
+                    subArea: parts[1],
+                    action: parts[2]
+                  };
+                });
+
+              for (const item of dominantPairs) {
+                if (item.action === 'implemented') {
+                  lines.push('Implemented parts of ' + item.area + ' focusing on ' + item.subArea + '.');
+                } else if (item.action === 'fixed') {
+                  lines.push('Fixed issues in ' + item.area + ' related to ' + item.subArea + '.');
+                } else if (item.action === 'refactored') {
+                  lines.push('Refactored ' + item.area + ' around ' + item.subArea + ' to improve maintainability.');
+                } else if (item.action === 'documented') {
+                  lines.push('Documented architectural or implementation decisions in ' + item.area + ' around ' + item.subArea + '.');
+                } else if (item.action === 'tested') {
+                  lines.push('Expanded testing work in ' + item.area + ' around ' + item.subArea + '.');
+                } else if (item.action === 'automated') {
+                  lines.push('Improved automation and workflow support in ' + item.area + ' related to ' + item.subArea + '.');
+                } else if (item.action === 'strengthened') {
+                  lines.push('Strengthened ' + item.area + ' with emphasis on ' + item.subArea + '.');
+                } else if (item.action === 'improved') {
+                  lines.push('Improved ' + item.area + ' around ' + item.subArea + '.');
+                } else if (item.action === 'refined') {
+                  lines.push('Refined ' + item.area + ' with focus on ' + item.subArea + '.');
+                } else if (item.action === 'modeled') {
+                  lines.push('Advanced modeling work in ' + item.area + ' around ' + item.subArea + '.');
+                } else {
+                  lines.push('Advanced ' + item.area + ' with focus on ' + item.subArea + '.');
+                }
+              }
+
+              const techniques = sortEntriesDesc(state.techniqueCounts)
+                .slice(0, 4)
+                .map(([name]) => name);
+
+              if (techniques.length > 0) {
+                lines.push('This week also involved work with ' + techniques.join(', ') + '.');
+              }
+
+              if (
+                state.areaCounts.has('Identity Service') ||
+                state.areaCounts.has('Catalog Service') ||
+                state.areaCounts.has('Shared Building Blocks')
+              ) {
+                lines.push('Overall, the week contributed to clarifying service boundaries and strengthening the core architectural direction.');
+              }
+
+              return unique(lines).slice(0, 6);
+            }
+
+            function buildLearned(state) {
+              const lessons = sortEntriesDesc(state.learningSignals)
+                .slice(0, 3)
+                .map(([text]) => text);
+
+              if (lessons.length > 0) {
+                return lessons;
+              }
+
+              return [
+                'This week reinforced the importance of aligning implementation decisions with long-term architectural goals.'
+              ];
+            }
+
+            function inferNextProgress(currentKey, orderedKeys, weeksMap) {
+              const idx = orderedKeys.indexOf(currentKey);
+              if (idx === -1 || idx === orderedKeys.length - 1) {
+                return [];
+              }
+
+              const nextState = weeksMap.get(orderedKeys[idx + 1]);
+              if (!nextState || !nextState.commits.length) {
+                return [];
+              }
+
+              const grouped = new Map();
+
+              const dominantPairs = sortEntriesDesc(nextState.areaActionCounts)
+                .slice(0, 4)
+                .map(([key]) => {
+                  const parts = key.split('__');
+                  return {
+                    area: parts[0],
+                    subArea: parts[1],
+                    action: parts[2]
+                  };
+                });
+
+              for (const item of dominantPairs) {
+                if (!grouped.has(item.area)) {
+                  grouped.set(item.area, []);
+                }
+                grouped.get(item.area).push(item.subArea);
+              }
+
+              const lines = [];
+
+              for (const [area, subAreas] of Array.from(grouped.entries()).slice(0, 2)) {
+                const uniqueSubAreas = unique(subAreas).slice(0, 3);
+
+                if (uniqueSubAreas.length === 1) {
+                  lines.push('Work is expected to continue in ' + area + ', especially around ' + uniqueSubAreas[0] + '.');
+                } else {
+                  const preview = uniqueSubAreas.slice(0, 2).join(' and ');
+                  lines.push('Work is expected to continue in ' + area + ', especially around ' + preview + '.');
+                }
+              }
 
               return lines;
             }
 
-            function buildLearned(items) {
-              const lessons = [];
-              const text = items.map(i => i[0]).join(' ').toLowerCase();
+            const repoResponse = await github.rest.repos.get({
+              owner,
+              repo
+            });
 
-              if (text.includes('identity') && text.includes('persistence')) {
-                lessons.push('Working on identity and persistence clarified how authentication data should remain outside core domain models.');
+            const repoCreatedAt = new Date(repoResponse.data.created_at);
+            const since = repoCreatedAt.toISOString();
+
+            core.info('Repository created at: ' + repoResponse.data.created_at);
+
+            const branches = await github.paginate(
+              github.rest.repos.listBranches,
+              {
+                owner,
+                repo,
+                per_page: 100
               }
+            );
 
-              if (text.includes('catalog') && text.includes('api')) {
-                lessons.push('Catalog work showed that better domain modeling leads to cleaner and more predictable API contracts.');
-              }
+            const includedBranches = branches
+              .map(b => b.name)
+              .filter(name => shouldIncludeBranch(name));
 
-              if (text.includes('shared')) {
-                lessons.push('Shared components are most effective when they stay minimal and avoid domain-specific responsibilities.');
-              }
+            core.info('Included branches: ' + (includedBranches.join(', ') || '(none)'));
 
-              if (lessons.length === 0) {
-                lessons.push('This week reinforced the importance of aligning implementation decisions with long-term architectural goals.');
-              }
-
-              return lessons;
+            if (!includedBranches.length) {
+              throw new Error('No matching branches found to process.');
             }
 
-            function inferNextProgress(currentKey, weeks) {
-              const keys = Object.keys(weeks).sort();
-              const idx = keys.indexOf(currentKey);
+            const weeks = new Map();
+            const seenShas = new Set();
 
-              if (idx === -1 || idx === keys.length - 1) return [];
+            for (const branchName of includedBranches) {
+              try {
+                core.info('Reading commits from branch ' + branchName);
 
-              const next = weeks[keys[idx + 1]];
-              const areas = new Set();
+                const commits = await github.paginate(
+                  github.rest.repos.listCommits,
+                  {
+                    owner,
+                    repo,
+                    sha: branchName,
+                    since,
+                    per_page: 100
+                  }
+                );
 
-              next.forEach(([k]) => {
-                const [area] = k.split('__');
-                areas.add(area);
-              });
+                core.info('Found ' + commits.length + ' commits in branch ' + branchName);
 
-              return Array.from(areas).slice(0, 2).map(a =>
-                `Work is expected to continue in ${a}, building on the current progress.`
-              );
+                for (const commit of commits) {
+                  const sha = commit.sha;
+                  if (!sha || seenShas.has(sha)) {
+                    continue;
+                  }
+
+                  seenShas.add(sha);
+
+                  const msg = normalizeMessage(commit.commit && commit.commit.message);
+                  const commitDateRaw =
+                    (commit.commit && commit.commit.author && commit.commit.author.date) ||
+                    (commit.commit && commit.commit.committer && commit.commit.committer.date);
+
+                  if (!msg || !commitDateRaw) {
+                    continue;
+                  }
+
+                  const weekStart = startOfWeekUTC(new Date(commitDateRaw));
+                  const weekKey = formatDateUTC(weekStart);
+
+                  if (!weeks.has(weekKey)) {
+                    weeks.set(weekKey, makeWeekState());
+                  }
+
+                  const analyzed = summarizeCommit(msg);
+                  addCommitToWeek(weeks.get(weekKey), analyzed);
+                }
+              } catch (error) {
+                core.warning('Failed to read branch ' + branchName + ': ' + (error && error.message ? error.message : 'Unknown error'));
+              }
             }
 
-            // ---------------------------
-            // AGGREGATION
-            // ---------------------------
-            const weeks = {};
+            const orderedWeekKeys = Array.from(weeks.keys()).sort();
 
-            for (const commit of commits) {
-              const date = commit.commit.author.date;
-              const msg = commit.commit.message;
+            let createdCount = 0;
 
-              const weekKey = getWeekKey(date);
-              const area = detectArea(msg);
-              const sub = detectSubArea(msg);
-              const action = detectAction(msg);
+            for (const weekKey of orderedWeekKeys) {
+              const state = weeks.get(weekKey);
 
-              const key = `${area}__${sub}__${action}`;
+              if (!state || !state.commits.length) {
+                continue;
+              }
 
-              if (!weeks[weekKey]) weeks[weekKey] = {};
-              if (!weeks[weekKey][key]) weeks[weekKey][key] = 0;
+              const weekStart = new Date(weekKey + 'T00:00:00Z');
+              const year = weekStart.getUTCFullYear();
+              const month = String(weekStart.getUTCMonth() + 1).padStart(2, '0');
+              const weekNumber = String(getMonthWeekNumber(weekStart)).padStart(2, '0');
+              const monthName = monthNameUTC(weekStart);
 
-              weeks[weekKey][key]++;
+              const filename = year + '-' + month + '-week-' + weekNumber + '.md';
+              const filePath = path.join('changelog', filename);
+
+              const accomplished = buildAccomplished(state);
+              const progress = inferNextProgress(weekKey, orderedWeekKeys, weeks);
+              const learned = buildLearned(state);
+
+              const accomplishedText = accomplished.map(line => '- ' + line).join('\n');
+              const progressText = (progress.length ? progress : ['No clear follow-up activity was inferred from the next active week.'])
+                .map(line => '- ' + line)
+                .join('\n');
+              const learnedText = learned.map(line => '- ' + line).join('\n');
+
+              const content =
+                '# Week ' + parseInt(weekNumber, 10) + ' – ' + monthName + ' ' + year + '\n\n' +
+                '_Date created:_ ' + formatDateUTC(new Date()) + '\n\n' +
+                '## ✅ What I accomplished\n' +
+                accomplishedText + '\n\n' +
+                '## 🔧 In progress\n' +
+                progressText + '\n\n' +
+                '## 🧠 What I learned\n' +
+                learnedText + '\n';
+
+              fs.writeFileSync(filePath, content, 'utf8');
+              createdCount += 1;
+              core.info('Wrote ' + filePath);
             }
 
-            const fs = require('fs');
+            core.setOutput('week_count', String(createdCount));
+            core.setOutput('branch_count', String(includedBranches.length));
+            core.setOutput('commit_count', String(seenShas.size));
 
-            for (const [weekKey, data] of Object.entries(weeks)) {
-
-              const sorted = Object.entries(data)
-                .sort((a, b) => b[1] - a[1]);
-
-              const accomplished = buildAccomplished(sorted);
-              const learned = buildLearned(sorted);
-              const progress = inferNextProgress(weekKey, weeks);
-
-              const content = `
-# ${weekKey}
-
-_Date created: ${new Date().toISOString().split('T')[0]}_
-
-## ✅ What I accomplished
-${accomplished.map(l => `- ${l}`).join('\n')}
-
-## 🔧 In progress
-${progress.map(l => `- ${l}`).join('\n')}
-
-## 🧠 What I learned
-${learned.map(l => `- ${l}`).join('\n')}
-`;
-
-              fs.writeFileSync(`${weekKey}.md`, content.trim());
-            }
-
-      - name: Commit results
+      - name: Commit generated changelogs
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add .
+
+          git add changelog/
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
           git commit -m "chore(devlog): regenerate changelogs (V3.1)"
           git push
+
+      - name: Print summary
+        shell: bash
+        run: |
+          echo "Weeks generated: ${{ steps.build.outputs.week_count }}"
+          echo "Branches scanned: ${{ steps.build.outputs.branch_count }}"
+          echo "Unique commits scanned: ${{ steps.build.outputs.commit_count }}"
