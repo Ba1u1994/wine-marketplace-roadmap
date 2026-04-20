@@ -1,4 +1,4 @@
-name: Weekly DevLog
+name: Weekly DevLog (V3.2)
 
 on:
   schedule:
@@ -22,7 +22,7 @@ jobs:
           set -euo pipefail
           mkdir -p changelog
 
-      - name: Build weekly devlog from private repo activity
+      - name: Build weekly devlogs from private repo activity
         id: build
         uses: actions/github-script@v7
         with:
@@ -33,6 +33,7 @@ jobs:
 
             const owner = 'wine-online-store';
             const repo = 'wine-marketplace';
+            const changelogDir = 'changelog';
 
             const includeBranchPatterns = [
               /^main$/i,
@@ -40,7 +41,8 @@ jobs:
               /^feature\//i,
               /^bugfix\//i,
               /^hotfix\//i,
-              /^release\//i
+              /^release\//i,
+              /^claude\//i
             ];
 
             const excludeBranchPatterns = [
@@ -107,6 +109,20 @@ jobs:
               return week;
             }
 
+            function weekStartFromYearMonthWeek(year, monthOneBased, weekNumber) {
+              let cursor = new Date(Date.UTC(year, monthOneBased - 1, 1));
+              cursor = startOfWeekUTC(cursor);
+              cursor = addDaysUTC(cursor, (weekNumber - 1) * 7);
+              return cursor;
+            }
+
+            function filenameFromWeekStart(weekStart) {
+              const year = weekStart.getUTCFullYear();
+              const month = String(weekStart.getUTCMonth() + 1).padStart(2, '0');
+              const weekNumber = String(getMonthWeekNumber(weekStart)).padStart(2, '0');
+              return `${year}-${month}-week-${weekNumber}.md`;
+            }
+
             function unique(arr) {
               return Array.from(new Set(arr));
             }
@@ -139,6 +155,7 @@ jobs:
               if (/(identity|auth|jwt|token|session|user|role|permission|rbac)/i.test(m)) return 'Identity Service';
               if (/(catalog|wine|winery|region|grape|appellation|vintage)/i.test(m)) return 'Catalog Service';
               if (/(order|cart|checkout|basket)/i.test(m)) return 'Orders Service';
+              if (/(pricing|price|money|priceversion|productpricing)/i.test(m)) return 'Pricing Service';
               if (/(payment|transaction|provider|billing|refund|invoice)/i.test(m)) return 'Payments Service';
               if (/(delivery|shipment|shipping|tracking|carrier|fulfillment)/i.test(m)) return 'Delivery Service';
               if (/(react|frontend|vite|typescript|page|component|layout|hook|form|ui)/i.test(m)) return 'Web Frontend';
@@ -146,7 +163,7 @@ jobs:
               if (/(gateway|ocelot|proxy|routing|bff)/i.test(m)) return 'API Gateway';
               if (/(value object|valueobject|aggregate root|strongly typed id|shared|kernel|result pattern|base entity)/i.test(m)) return 'Shared Building Blocks';
               if (/(docker|compose|workflow|pipeline|github actions|ci|cd|environment|deployment|infra|logging|observability|monitoring)/i.test(m)) return 'Infrastructure / DevOps';
-              if (/(docs|readme|adr|architecture|roadmap|design|decision|planning)/i.test(m)) return 'Architecture / Documentation';
+              if (/(docs|readme|adr|architecture|roadmap|design|decision|planning|execution plan|security\.md|testing\.md|development\.md|api\.md)/i.test(m)) return 'Architecture / Documentation';
 
               if (/(api|endpoint|contract|request|response|swagger)/i.test(m)) return 'API Surface';
               if (/(repository|migration|dbcontext|database|sql|persistence|query)/i.test(m)) return 'Persistence Layer';
@@ -166,7 +183,9 @@ jobs:
               if (/(test|validation|validator|coverage|spec)/i.test(m)) return 'testing and validation';
               if (/(aggregate|entity|value object|valueobject|domain model|domain modeling|invariant)/i.test(m)) return 'domain modeling';
               if (/(handler|use case|application flow|command|query|mediatr|cqrs)/i.test(m)) return 'application flow';
-              if (/(roadmap|adr|architecture|design note|boundary|layer)/i.test(m)) return 'architecture and design direction';
+              if (/(roadmap|adr|architecture|design note|boundary|layer|execution plan)/i.test(m)) return 'architecture and design direction';
+              if (/(security|headers|rate limit|authorize|policy)/i.test(m)) return 'security boundaries';
+              if (/(money|price history|timeline|effectivefrom|effectiveto)/i.test(m)) return 'pricing timeline behavior';
 
               if (/(wine|winery|region|grape|appellation)/i.test(m)) return 'catalog structure';
               if (/(auth|identity|token|session|login|logout|register)/i.test(m)) return 'authentication flow';
@@ -183,6 +202,7 @@ jobs:
               if (/^docs?(\(.+\))?:/i.test(msg)) return 'documented';
               if (/^tests?(\(.+\))?:/i.test(msg)) return 'tested';
               if (/^ci(\(.+\))?:/i.test(msg)) return 'automated';
+              if (/^chore(\(.+\))?:/i.test(msg)) return 'improved';
 
               if (/(security|auth|jwt|token|authorization|permission|role)/i.test(m)) return 'strengthened';
               if (/(repository|migration|dbcontext|database|sql|persistence)/i.test(m)) return 'improved';
@@ -208,13 +228,14 @@ jobs:
               if (/github actions|workflow/i.test(m)) tech.push('GitHub Actions');
               if (/react/i.test(m)) tech.push('React');
               if (/typescript/i.test(m)) tech.push('TypeScript');
-              if (/validation|validator/i.test(m)) tech.push('validation');
+              if (/validation|validator|fluentvalidation/i.test(m)) tech.push('validation');
               if (/logging|observability|monitoring/i.test(m)) tech.push('logging and observability');
               if (/problem details|problemdetails|exception|error handling/i.test(m)) tech.push('error handling');
               if (/value object|valueobject/i.test(m)) tech.push('value objects');
               if (/strongly typed id/i.test(m)) tech.push('strongly typed IDs');
               if (/aggregate root/i.test(m)) tech.push('aggregate roots');
               if (/result pattern|\bresult\b/i.test(m)) tech.push('result pattern');
+              if (/security header|rate limit|rate-limited|authorize|policy/i.test(m)) tech.push('security hardening');
 
               return tech;
             }
@@ -223,8 +244,8 @@ jobs:
               const m = msg.toLowerCase();
               const signals = [];
 
-              if (area === 'Identity Service' && /persistence|repository|dbcontext|database|sql/.test(m)) {
-                signals.push('Authentication data is easier to evolve when token and session storage stay outside core domain behavior.');
+              if ((area === 'Identity Service' || area === 'Pricing Service') && /persistence|repository|dbcontext|database|sql/.test(m)) {
+                signals.push('State that changes over time is easier to maintain when persistence concerns stay outside core domain behavior.');
               }
 
               if (area === 'Catalog Service' && /api|endpoint|contract|request|response/.test(m)) {
@@ -247,11 +268,17 @@ jobs:
                 signals.push('Explicit domain, application, and infrastructure boundaries reduce architectural drift over time.');
               }
 
+              if (/(security|authorize|policy|rate limit|header)/i.test(m)) {
+                signals.push('Security behavior becomes easier to reason about when access rules are enforced consistently at the boundary.');
+              }
+
               if (signals.length === 0) {
                 if (area === 'Catalog Service') {
                   signals.push('Catalog work benefits from keeping domain language clear before expanding persistence and API surface.');
                 } else if (area === 'Identity Service') {
                   signals.push('Identity-related work stays healthier when security concerns remain explicit and localized.');
+                } else if (area === 'Pricing Service') {
+                  signals.push('Pricing behavior becomes safer when timeline rules are enforced in the model before infrastructure is added around it.');
                 } else if (action === 'refactored') {
                   signals.push('Structural cleanup is most effective before complexity becomes harder to unwind.');
                 }
@@ -293,18 +320,16 @@ jobs:
             }
 
             function buildKeyFocus(state) {
-              const focuses = sortEntriesDesc(state.areaCounts)
+              return sortEntriesDesc(state.areaCounts)
                 .slice(0, 3)
                 .map(([name]) => name);
-
-              return focuses;
             }
 
             function buildAccomplished(state) {
               const lines = [];
 
               const dominant = sortEntriesDesc(state.areaActionCounts)
-                .slice(0, 4)
+                .slice(0, 5)
                 .map(([key]) => {
                   const parts = key.split('__');
                   return {
@@ -331,6 +356,8 @@ jobs:
                   lines.push('Implemented and refined ' + area + ' around ' + subAreas.join(' and ') + '.');
                 } else if (actions.includes('implemented') && actions.includes('improved')) {
                   lines.push('Implemented and improved ' + area + ' around ' + subAreas.join(' and ') + '.');
+                } else if (actions.includes('implemented') && actions.includes('tested')) {
+                  lines.push('Implemented and tested ' + area + ' around ' + subAreas.join(' and ') + '.');
                 } else if (actions.includes('strengthened')) {
                   lines.push('Strengthened ' + area + ' with emphasis on ' + subAreas.join(' and ') + '.');
                 } else if (actions.includes('refactored')) {
@@ -424,12 +451,48 @@ jobs:
               return lines;
             }
 
-            const repoResponse = await github.rest.repos.get({ owner, repo });
-            const now = new Date();
-            const currentWeekStart = startOfWeekUTC(now);
-            const since = currentWeekStart.toISOString();
+            function parseExistingWeekFile(filename) {
+              const match = /^(\d{4})-(\d{2})-week-(\d{2})\.md$/.exec(filename);
+              if (!match) return null;
 
-            core.info('Current week start: ' + since);
+              const year = parseInt(match[1], 10);
+              const month = parseInt(match[2], 10);
+              const week = parseInt(match[3], 10);
+              const weekStart = weekStartFromYearMonthWeek(year, month, week);
+
+              return {
+                filename,
+                year,
+                month,
+                week,
+                weekStart
+              };
+            }
+
+            const repoResponse = await github.rest.repos.get({ owner, repo });
+            const repoCreatedAt = new Date(repoResponse.data.created_at);
+
+            const existingFiles = fs.existsSync(changelogDir)
+              ? fs.readdirSync(changelogDir).filter(name => /^(\d{4})-(\d{2})-week-(\d{2})\.md$/.test(name))
+              : [];
+
+            const parsedExisting = existingFiles
+              .map(parseExistingWeekFile)
+              .filter(Boolean)
+              .sort((a, b) => a.weekStart.getTime() - b.weekStart.getTime());
+
+            let sinceDate;
+            if (parsedExisting.length > 0) {
+              const latest = parsedExisting[parsedExisting.length - 1];
+              sinceDate = latest.weekStart;
+              core.info('Latest existing changelog: ' + latest.filename + ' (week start ' + formatDateUTC(latest.weekStart) + ')');
+            } else {
+              sinceDate = startOfWeekUTC(repoCreatedAt);
+              core.info('No existing changelog files found. Starting from repository creation week: ' + formatDateUTC(sinceDate));
+            }
+
+            const since = sinceDate.toISOString();
+            const now = new Date();
 
             const branches = await github.paginate(
               github.rest.repos.listBranches,
@@ -450,13 +513,12 @@ jobs:
               throw new Error('No matching branches found to process.');
             }
 
-            const thisWeek = makeWeekState();
-            const nextWeekForecast = makeWeekState();
+            const weeks = new Map();
             const seenShas = new Set();
 
             for (const branchName of includedBranches) {
               try {
-                core.info('Reading commits from branch ' + branchName);
+                core.info('Reading commits from branch ' + branchName + ' since ' + since);
 
                 const commits = await github.paginate(
                   github.rest.repos.listCommits,
@@ -486,72 +548,79 @@ jobs:
 
                   const commitDate = new Date(commitDateRaw);
                   const weekStart = startOfWeekUTC(commitDate);
-                  const analyzed = summarizeCommit(msg);
+                  const weekKey = formatDateUTC(weekStart);
 
-                  if (weekStart.getTime() === currentWeekStart.getTime()) {
-                    addCommitToWeek(thisWeek, analyzed);
-                  } else if (weekStart.getTime() > currentWeekStart.getTime()) {
-                    addCommitToWeek(nextWeekForecast, analyzed);
+                  if (!weeks.has(weekKey)) {
+                    weeks.set(weekKey, makeWeekState());
                   }
+
+                  const analyzed = summarizeCommit(msg);
+                  addCommitToWeek(weeks.get(weekKey), analyzed);
                 }
               } catch (error) {
                 core.warning('Failed to read branch ' + branchName + ': ' + (error && error.message ? error.message : 'Unknown error'));
               }
             }
 
-            if (!thisWeek.commits.length) {
-              core.setOutput('has_activity', 'false');
-              core.setOutput('filename', '');
-              core.info('No activity found for the current week. No changelog file will be created.');
-              return;
+            const weekKeysWithActivity = Array.from(weeks.keys()).sort();
+
+            const filesCreated = [];
+
+            for (const weekKey of weekKeysWithActivity) {
+              const weekStart = new Date(weekKey + 'T00:00:00Z');
+              const filename = filenameFromWeekStart(weekStart);
+              const filePath = path.join(changelogDir, filename);
+
+              if (fs.existsSync(filePath)) {
+                core.info('Skipping existing file: ' + filePath);
+                continue;
+              }
+
+              const state = weeks.get(weekKey);
+              if (!state || !state.commits.length) {
+                continue;
+              }
+
+              const year = weekStart.getUTCFullYear();
+              const weekNumber = String(getMonthWeekNumber(weekStart)).padStart(2, '0');
+              const monthName = monthNameUTC(weekStart);
+
+              const keyFocus = buildKeyFocus(state);
+              const accomplished = buildAccomplished(state);
+              const learned = buildLearned(state);
+              const progress = inferNextProgress(weekKey, weekKeysWithActivity, weeks);
+
+              const keyFocusText = keyFocus.map(line => '- ' + line).join('\n');
+              const accomplishedText = accomplished.map(line => '- ' + line).join('\n');
+              const progressText = progress.length
+                ? progress.map(line => '- ' + line).join('\n')
+                : '- No clear follow-up activity was inferred yet.';
+              const learnedText = learned.map(line => '- ' + line).join('\n');
+
+              const content =
+                '# Week ' + parseInt(weekNumber, 10) + ' – ' + monthName + ' ' + year + '\n\n' +
+                '_Date created:_ ' + formatDateUTC(now) + '\n\n' +
+                '## 🧩 Key focus\n' +
+                keyFocusText + '\n\n' +
+                '## ✅ What I accomplished\n' +
+                accomplishedText + '\n\n' +
+                '## 🔧 In progress\n' +
+                progressText + '\n\n' +
+                '## 🧠 What I learned\n' +
+                learnedText + '\n';
+
+              fs.writeFileSync(filePath, content, 'utf8');
+              filesCreated.push(filePath);
+              core.info('Wrote ' + filePath);
             }
 
-            const year = currentWeekStart.getUTCFullYear();
-            const month = String(currentWeekStart.getUTCMonth() + 1).padStart(2, '0');
-            const weekNumber = String(getMonthWeekNumber(currentWeekStart)).padStart(2, '0');
-            const monthName = monthNameUTC(currentWeekStart);
-            const filename = year + '-' + month + '-week-' + weekNumber + '.md';
-            const filePath = path.join('changelog', filename);
-
-            const keyFocus = buildKeyFocus(thisWeek);
-            const accomplished = buildAccomplished(thisWeek);
-            const learned = buildLearned(thisWeek);
-
-            const forecastMap = new Map();
-            forecastMap.set('current', thisWeek);
-            forecastMap.set('next', nextWeekForecast);
-            const progress = nextWeekForecast.commits.length
-              ? inferNextProgress('current', ['current', 'next'], forecastMap)
-              : [];
-
-            const keyFocusText = keyFocus.map(line => '- ' + line).join('\n');
-            const accomplishedText = accomplished.map(line => '- ' + line).join('\n');
-            const progressText = progress.length
-              ? progress.map(line => '- ' + line).join('\n')
-              : '- No clear follow-up activity was inferred yet.';
-            const learnedText = learned.map(line => '- ' + line).join('\n');
-
-            const content =
-              '# Week ' + parseInt(weekNumber, 10) + ' – ' + monthName + ' ' + year + '\n\n' +
-              '_Date created:_ ' + formatDateUTC(now) + '\n\n' +
-              '## 🧩 Key focus\n' +
-              keyFocusText + '\n\n' +
-              '## ✅ What I accomplished\n' +
-              accomplishedText + '\n\n' +
-              '## 🔧 In progress\n' +
-              progressText + '\n\n' +
-              '## 🧠 What I learned\n' +
-              learnedText + '\n';
-
-            fs.writeFileSync(filePath, content, 'utf8');
-
-            core.setOutput('has_activity', 'true');
-            core.setOutput('filename', filename);
-            core.setOutput('file_path', filePath);
+            core.setOutput('has_activity', filesCreated.length > 0 ? 'true' : 'false');
+            core.setOutput('files_created', JSON.stringify(filesCreated));
+            core.setOutput('file_count', String(filesCreated.length));
             core.setOutput('branch_count', String(includedBranches.length));
             core.setOutput('commit_count', String(seenShas.size));
 
-      - name: Commit generated changelog
+      - name: Commit generated changelogs
         if: steps.build.outputs.has_activity == 'true'
         shell: bash
         run: |
@@ -560,20 +629,21 @@ jobs:
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
-          git add "${{ steps.build.outputs.file_path }}"
+          git add changelog/
 
           if git diff --cached --quiet; then
             echo "No changes to commit"
             exit 0
           fi
 
-          git commit -m "chore(devlog): create ${{ steps.build.outputs.filename }}"
+          git commit -m "chore(devlog): create missing weekly changelogs"
           git push
 
       - name: Print summary
         shell: bash
         run: |
           echo "Has activity: ${{ steps.build.outputs.has_activity }}"
-          echo "Generated file: ${{ steps.build.outputs.filename }}"
+          echo "Files created: ${{ steps.build.outputs.files_created }}"
+          echo "File count: ${{ steps.build.outputs.file_count }}"
           echo "Branches scanned: ${{ steps.build.outputs.branch_count }}"
           echo "Unique commits scanned: ${{ steps.build.outputs.commit_count }}"
